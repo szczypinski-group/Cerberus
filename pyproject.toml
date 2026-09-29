@@ -1,0 +1,77 @@
+[build-system]
+requires      = ["uv_build>=0.9.5,<0.10.0"]
+build-backend = "uv_build"
+
+[project]
+name            = "example-python-project"
+version         = "0.1.0"
+description     = "Add your description here"
+readme          = "README.md"
+requires-python = ">=3.14"
+license         = "MPL-2.0"
+
+authors = [
+    { name = "Filip T. Szczypiński", email = "filip.t.szczypinski@durham.ac.uk" },
+]
+
+classifiers = [
+    "Private :: Do Not Upload",
+    "Development Status :: 2 - Pre-Alpha",
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
+
+dependencies = [
+    "rdkit>=2025.9.1",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.3.0",
+    "interrogate>=1.7.0",
+    "nox>=2025.10.16",
+    "pytest>=8.4.2",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.14.2",
+]
+
+    [project.scripts]
+    example-pkg = "example_python_project:main"
+
+[tool.interrogate]
+verbose                    = 2
+ignore-setters             = true
+ignore-property-decorators = true
+ignore-magic               = true
+
+[[tool.mypy.overrides]]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 79
+target-version = "py311"
+lint.select = [
+    "E",   # pycodestyle
+    "F",   # Pyflakes
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "TD",  # flake8-todos
+    "PTH", # flake8-use-pathlib
+    "ANN", # flake8-annotations
+    "I",   # isort
+    "N",   # PEP8 naming
+    "D",   # pydocstyle
+]
+lint.ignore = [
+    "D105",
+]
+
+    [tool.ruff.lint.pydocstyle]
+    convention = "google"
+
+[tool.uv.workspace]
+members = [
+    "example_python_package",
+]
