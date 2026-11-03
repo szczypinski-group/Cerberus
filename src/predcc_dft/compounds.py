@@ -32,7 +32,7 @@ def read_list(path: Path) -> list[dict]:
                 }
             )
     elif suffix == ".csv":
-        with path.open(newline="") as fh:
+        with path.open(encoding="utf-8", newline="") as fh:
             reader = csv.DictReader(fh)
             fields = {f.lower().strip(): f for f in reader.fieldnames or []}
             if "smiles" not in fields:
@@ -52,7 +52,9 @@ def read_list(path: Path) -> list[dict]:
                     {"name": name, "smiles": smi, "source": f"{path.name}:{i}"}
                 )
     else:  # .txt / .smi: one SMILES per line, optional name after a space
-        for i, line in enumerate(path.read_text().splitlines(), start=1):
+        for i, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
             line = line.strip()
             if not line or line.startswith("#"):  # whole-line comments only:
                 continue  # '#' inside a SMILES is a triple bond

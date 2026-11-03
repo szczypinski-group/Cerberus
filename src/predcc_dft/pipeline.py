@@ -186,7 +186,7 @@ def advance(
 ) -> dict:
     """Run one round. Returns a report dict (printed by the CLI)."""
     cfg.jobs_dir.mkdir(parents=True, exist_ok=True)
-    with (cfg.jobs_dir / ".lock").open("w") as lock:
+    with (cfg.jobs_dir / ".lock").open("w", encoding="utf-8") as lock:
         _lock(lock)
         return _advance(cfg, submit, round_no, config, force_prepare)
 
@@ -224,7 +224,11 @@ def _advance(
         for s, r in written.items()
     }
     given_up = {
-        s: len((cfg.jobs_dir / s / "given_up.txt").read_text().split())
+        s: len(
+            (cfg.jobs_dir / s / "given_up.txt")
+            .read_text(encoding="utf-8")
+            .split()
+        )
         for s in written
         if (cfg.jobs_dir / s / "given_up.txt").exists()
     }

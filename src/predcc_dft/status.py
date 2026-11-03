@@ -70,7 +70,9 @@ def run(cfg: Config) -> list[dict]:
             }
         )
     cfg.derived_dir.mkdir(parents=True, exist_ok=True)
-    with (cfg.derived_dir / "setup_status.csv").open("w", newline="") as fh:
+    with (cfg.derived_dir / "setup_status.csv").open(
+        "w", encoding="utf-8", newline=""
+    ) as fh:
         w = csv.DictWriter(fh, fieldnames=COLUMNS)
         w.writeheader()
         w.writerows(rows)

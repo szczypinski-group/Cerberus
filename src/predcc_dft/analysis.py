@@ -409,7 +409,7 @@ def _fmt(key: str, v: object) -> object:
 
 def _write_csv(path: Path, rows: list[dict]) -> None:
     """Write rows (dicts with equal keys) as CSV."""
-    with path.open("w", newline="") as fh:
+    with path.open("w", encoding="utf-8", newline="") as fh:
         if not rows:
             return
         w = csv.DictWriter(fh, fieldnames=list(rows[0]))

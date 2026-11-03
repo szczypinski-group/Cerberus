@@ -86,7 +86,7 @@ def write_jobs(cfg: Config, force: bool = False) -> dict:
             waiting += 1
             continue
         mdir = conformers.mol_dir(cfg, rec)
-        geometry = (mdir / "best.xyz").read_text()
+        geometry = (mdir / "best.xyz").read_text(encoding="utf-8")
         for label in labels:
             jdir = mdir / "benchmark" / label
             res = orca.parse_output(jdir / "output.out")
@@ -131,7 +131,7 @@ def collect(cfg: Config) -> dict:
         best = mdir / "best.xyz"
         if reference.structure(cfg, rec) is None or not best.exists():
             continue
-        geometry = best.read_text()
+        geometry = best.read_text(encoding="utf-8")
         for inp in sorted((mdir / "benchmark").glob("*/input.inp")):
             jdir, label = inp.parent, inp.parent.name
             res = orca.parse_output(jdir / "output.out")

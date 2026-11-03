@@ -169,7 +169,9 @@ def write_jobs(cfg: Config, force: bool = False) -> dict:
                     else adir / "geom.xyz"
                 )
                 nxt = cdir / f"attempt{n + 1}"
-                _write_attempt(cfg, nxt, geom_src.read_text(), True, label)
+                _write_attempt(
+                    cfg, nxt, geom_src.read_text(encoding="utf-8"), True, label
+                )
                 tasks.append(nxt)
                 retried += 1
         write_toml(

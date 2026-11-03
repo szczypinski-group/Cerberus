@@ -65,7 +65,9 @@ def write_toml(path: Path, data: dict) -> None:
 def write_text(path: Path, text: str, executable: bool = False) -> None:
     """Write a text file, creating parent folders."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, newline="\n")  # LF: scripts run on Linux
+    path.write_text(
+        text, encoding="utf-8", newline="\n"
+    )  # LF: scripts run on Linux
     if executable:
         path.chmod(0o755)
 
@@ -84,14 +86,14 @@ def pipeline_commit() -> str:
         out = subprocess.run(
             ["git", "-C", str(PACKAGE_DIR), "rev-parse", "--short", "HEAD"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
             timeout=10,
             check=True,
         )
         dirty = subprocess.run(
             ["git", "-C", str(PACKAGE_DIR), "status", "--porcelain", "."],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
             timeout=10,
             check=True,
         )
@@ -191,7 +193,7 @@ def load_config(
 
 def read_xyz_frames(path: Path) -> list[tuple[str, Atoms]]:
     """Read a (multi-frame) xyz file -> [(comment, [(el, x, y, z)])]."""
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     frames, i = [], 0
     while i < len(lines):
         if not lines[i].strip():

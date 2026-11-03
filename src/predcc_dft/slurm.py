@@ -132,7 +132,7 @@ def write_single(cfg: Config, stage: str, task_dir: Path, label: str) -> Path:
 def submissions(task_dir: Path) -> int:
     """How often `predcc run --submit` has submitted this task folder."""
     f = task_dir / ".submissions"
-    return int(f.read_text().strip() or 0) if f.exists() else 0
+    return int(f.read_text(encoding="utf-8").strip() or 0) if f.exists() else 0
 
 
 def write_array(cfg: Config, stage: str, task_dirs: list[Path]) -> Path | None:
@@ -147,12 +147,16 @@ def write_array(cfg: Config, stage: str, task_dirs: list[Path]) -> Path | None:
     given_up = [d for d in task_dirs if submissions(d) >= limit]
     task_dirs = [d for d in task_dirs if submissions(d) < limit]
     (stage_dir / "given_up.txt").write_text(
-        "".join(f"{d.relative_to(cfg.root).as_posix()}\n" for d in given_up)
+        "".join(f"{d.relative_to(cfg.root).as_posix()}\n" for d in given_up),
+        encoding="utf-8",
+        newline="\n",
     )
     manifest = stage_dir / "manifest.txt"
     script = stage_dir / f"{stage}.slurm"
     rel = [d.relative_to(cfg.root).as_posix() for d in task_dirs]
-    manifest.write_text("".join(f"{r}\n" for r in rel))
+    manifest.write_text(
+        "".join(f"{r}\n" for r in rel), encoding="utf-8", newline="\n"
+    )
     if not task_dirs:
         script.unlink(missing_ok=True)
         return None
@@ -188,7 +192,9 @@ def sbatch(script: Path, dependency: list[str] | None = None) -> str:
     if dependency:
         cmd.append(f"--dependency=afterany:{':'.join(dependency)}")
     cmd.append(str(script))
-    out = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    out = subprocess.run(
+        cmd, capture_output=True, encoding="utf-8", check=False
+    )
     if out.returncode != 0:
         raise RuntimeError(f"sbatch {script} failed: {out.stderr.strip()}")
     return out.stdout.strip().split(";")[0]
@@ -201,7 +207,7 @@ def active_jobs() -> set[str]:
     out = subprocess.run(
         ["squeue", "-h", "-u", getpass.getuser(), "-o", "%F %i"],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=False,
     )
     ids: set[str] = set()
@@ -243,7 +249,9 @@ def record_submission(
     }
     write_toml(path, data)
     for d in task_dirs:
-        (d / ".submissions").write_text(f"{submissions(d) + 1}\n")
+        (d / ".submissions").write_text(
+            f"{submissions(d) + 1}\n", encoding="utf-8"
+        )
 
 
 def manifest_tasks(cfg: Config, stage: str) -> list[Path]:
@@ -251,4 +259,8 @@ def manifest_tasks(cfg: Config, stage: str) -> list[Path]:
     manifest = cfg.jobs_dir / stage / "manifest.txt"
     if not manifest.exists():
         return []
-    return [cfg.root / line for line in manifest.read_text().split() if line]
+    return [
+        cfg.root / line
+        for line in manifest.read_text(encoding="utf-8").split()
+        if line
+    ]

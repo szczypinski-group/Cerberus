@@ -37,7 +37,7 @@ def geometry_sha256(text: str) -> str:
 def on_geometry(task_dir: Path, geometry: str) -> bool:
     """True if the task folder was written for exactly this geometry."""
     geom = task_dir / "geom.xyz"
-    return geom.exists() and geom.read_text() == geometry
+    return geom.exists() and geom.read_text(encoding="utf-8") == geometry
 
 
 def single_point_status(
@@ -81,7 +81,9 @@ def write(
     if geom.exists():
         calculation = {
             **calculation,
-            "geometry_sha256": geometry_sha256(geom.read_text()),
+            "geometry_sha256": geometry_sha256(
+                geom.read_text(encoding="utf-8")
+            ),
         }
     if "attempt" not in calculation:
         from predcc_dft.slurm import submissions
@@ -200,7 +202,9 @@ def collect_csv(cfg: Config) -> int:
             }
         )
     cfg.derived_dir.mkdir(parents=True, exist_ok=True)
-    with (cfg.derived_dir / "calculations.csv").open("w", newline="") as fh:
+    with (cfg.derived_dir / "calculations.csv").open(
+        "w", encoding="utf-8", newline=""
+    ) as fh:
         w = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
         w.writeheader()
         w.writerows(rows)

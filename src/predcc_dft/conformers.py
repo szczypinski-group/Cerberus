@@ -189,7 +189,9 @@ def collect(cfg: Config, rec: dict) -> dict | None:
     cdir = mol_dir(cfg, rec) / "conformers"
     if not censo_done(cfg, rec):
         return None
-    data = json.loads((cdir / "censo" / f"{CENSO_RESULT}.json").read_text())
+    data = json.loads(
+        (cdir / "censo" / f"{CENSO_RESULT}.json").read_text(encoding="utf-8")
+    )
     per_conf = data.get("data", data)
     frames = {
         comment.split()[0]: atoms

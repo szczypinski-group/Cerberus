@@ -102,16 +102,19 @@ def cmd_init(root: Path, example: bool) -> int:
         cdir / "settings.toml": STARTER_SETTINGS.format(
             defaults=(DATA_DIR / "settings.toml").as_posix(), setup=setup
         ),
-        cdir / "methods.toml": (DATA_DIR / "methods.toml").read_text(),
-        cdir / "censo2rc": (DATA_DIR / "censo2rc").read_text(),
+        cdir / "methods.toml": (DATA_DIR / "methods.toml").read_text(
+            encoding="utf-8"
+        ),
+        cdir / "censo2rc": (DATA_DIR / "censo2rc").read_text(encoding="utf-8"),
         root / "experimental" / "_example.toml": EXPERIMENTAL_EXAMPLE,
     }
     for name in ("aldehydes.txt", "amines.txt"):
         src = DATA_DIR / "examples" / name
         files[root / "inputs" / name] = (
-            src.read_text()
+            src.read_text(encoding="utf-8")
             if example
-            else src.read_text().split("\n", 2)[0] + "\n"  # header only
+            else src.read_text(encoding="utf-8").split("\n", 2)[0]
+            + "\n"  # header only
         )
     for path, text in files.items():
         if path.exists():

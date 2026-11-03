@@ -93,7 +93,7 @@ def write_jobs(cfg: Config, force: bool = False) -> dict:
             waiting += 1
             continue
         mdir = conformers.mol_dir(cfg, rec)
-        geometry = (mdir / "best.xyz").read_text()
+        geometry = (mdir / "best.xyz").read_text(encoding="utf-8")
         for job, (keywords, blocks) in job_inputs(cfg).items():
             jdir = mdir / "reference" / job
             res = orca.parse_output(jdir / "output.out")
@@ -167,7 +167,7 @@ def collect(cfg: Config) -> dict:
             missing.append(rec["compound"])
             continue
         mdir = conformers.mol_dir(cfg, rec)
-        geometry = (mdir / "best.xyz").read_text()
+        geometry = (mdir / "best.xyz").read_text(encoding="utf-8")
         res, state = {}, {}
         for job in job_inputs(cfg):
             jdir = mdir / "reference" / job
