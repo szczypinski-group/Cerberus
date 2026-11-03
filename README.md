@@ -1,8 +1,7 @@
 # PreDCC DFT
 
 DFT benchmarking of imine-type (C=N) condensation and exchange equilibria in
-acetonitrile, following the SOP *Imine-Type Equilibria in Acetonitrile*,
-Part II (sections 2 and 5–8). From aldehyde and amine lists, the pipeline
+acetonitrile. From aldehyde and amine lists, the pipeline
 builds every product, finds conformers, optimises them and checks their
 structures. It then computes the DLPNO-CCSD(T)/CBS reference and runs every
 method in the benchmark matrix. It finishes by ranking the methods and writing
