@@ -147,11 +147,11 @@ def write_array(cfg: Config, stage: str, task_dirs: list[Path]) -> Path | None:
     given_up = [d for d in task_dirs if submissions(d) >= limit]
     task_dirs = [d for d in task_dirs if submissions(d) < limit]
     (stage_dir / "given_up.txt").write_text(
-        "".join(f"{d.relative_to(cfg.root)}\n" for d in given_up)
+        "".join(f"{d.relative_to(cfg.root).as_posix()}\n" for d in given_up)
     )
     manifest = stage_dir / "manifest.txt"
     script = stage_dir / f"{stage}.slurm"
-    rel = [str(d.relative_to(cfg.root)) for d in task_dirs]
+    rel = [d.relative_to(cfg.root).as_posix() for d in task_dirs]
     manifest.write_text("".join(f"{r}\n" for r in rel))
     if not task_dirs:
         script.unlink(missing_ok=True)

@@ -196,7 +196,7 @@ def collect_csv(cfg: Config) -> int:
                     k: rec.get("job", {}).get(k, "")
                     for k in ("slurm_job_id", "cores", "wall_time_s")
                 },
-                "directory": str(path.parent.relative_to(cfg.root)),
+                "directory": path.parent.relative_to(cfg.root).as_posix(),
             }
         )
     cfg.derived_dir.mkdir(parents=True, exist_ok=True)

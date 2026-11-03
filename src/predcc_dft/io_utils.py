@@ -65,7 +65,7 @@ def write_toml(path: Path, data: dict) -> None:
 def write_text(path: Path, text: str, executable: bool = False) -> None:
     """Write a text file, creating parent folders."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    path.write_text(text, newline="\n")  # LF: scripts run on Linux
     if executable:
         path.chmod(0o755)
 

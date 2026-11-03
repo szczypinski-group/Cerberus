@@ -829,3 +829,22 @@ def test_text_input(tmp_path: Path) -> None:
     cfg = load_config(root=root)
     assert cfg["inputs"]["aldehydes"] == "inputs/aldehydes.txt"
     assert len(read_list(root / "inputs" / "aldehydes.txt")) >= 5
+
+
+@pytest.mark.parametrize("os_name", ["posix", "nt"])
+def test_init_settings_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, os_name: str
+) -> None:
+    """config/settings.toml from init is valid TOML on Linux and Windows."""
+    from predcc_dft import cli
+
+    monkeypatch.setattr(cli.os, "name", os_name)
+    monkeypatch.setattr(cli.sys, "prefix", "C:\\Users\\me\\.venv")
+    root = tmp_path / "p"
+    assert cli.cmd_init(root, example=True) == 0
+    cfg = load_config(root=root)
+    lines = cfg["slurm"]["setup_lines"]
+    if os_name == "nt":
+        assert lines == []
+    else:
+        assert lines == ["source C:\\Users\\me\\.venv/bin/activate"]

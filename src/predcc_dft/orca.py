@@ -43,7 +43,7 @@ def write_input(
 ) -> Path:
     """Write input.inp + geom.xyz into directory."""
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / "geom.xyz").write_text(geometry)
+    (directory / "geom.xyz").write_text(geometry, newline="\n")
     text = [
         f"! {keywords}",
         f"%pal nprocs {nprocs} end",
@@ -53,7 +53,7 @@ def write_input(
         text.append(blocks.strip())
     text.append(f"* xyzfile {charge} {multiplicity} geom.xyz")
     path = directory / "input.inp"
-    path.write_text("\n".join(text) + "\n")
+    path.write_text("\n".join(text) + "\n", newline="\n")
     return path
 
 

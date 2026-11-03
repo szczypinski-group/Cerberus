@@ -142,8 +142,8 @@ def _write_molecule(comp: dict, cfg: Config, force: bool) -> dict:
             seed_records.append(
                 {
                     "label": label,
-                    "xyz": str(xyz_path.relative_to(cfg.root)),
-                    "sdf": str(sdf_path.relative_to(cfg.root)),
+                    "xyz": xyz_path.relative_to(cfg.root).as_posix(),
+                    "sdf": sdf_path.relative_to(cfg.root).as_posix(),
                     "random_seed": meta["random_seed"],
                     "rotamer": meta.get("rotamer_after_ff", ""),
                 }
@@ -168,7 +168,7 @@ def _write_molecule(comp: dict, cfg: Config, force: bool) -> dict:
         "role": comp["role"],
         "name": comp["name"],
         "smiles": comp["smiles"],
-        "directory": str(mdir.relative_to(cfg.root)),
+        "directory": mdir.relative_to(cfg.root).as_posix(),
         **chem.properties(molh),
         **{
             k: comp[k]

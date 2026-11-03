@@ -149,7 +149,7 @@ def run(cfg: Config) -> dict:
                 "attempt": calc["attempt"],
                 "freq_status": calc["status"],
                 "freq_reason": calc["reason"],
-                "directory": str(r["dir"].relative_to(cfg.root)),
+                "directory": r["dir"].relative_to(cfg.root).as_posix(),
             }
             if calc["status"] == "completed":
                 atoms = read_xyz_frames(r["dir"] / "final.xyz")[-1][1]
@@ -228,7 +228,9 @@ def run(cfg: Config) -> dict:
                     "stereo": best["stereo"],
                     "rotamer": best["rotamer"],
                     "smiles": best["smiles"],
-                    "geometry": str((mdir / "best.xyz").relative_to(cfg.root)),
+                    "geometry": (mdir / "best.xyz")
+                    .relative_to(cfg.root)
+                    .as_posix(),
                     "e_hartree": best["e_hartree"],
                     "g_corr_hartree": best["g_corr_hartree"],
                     "g_hartree": best["g_hartree"],

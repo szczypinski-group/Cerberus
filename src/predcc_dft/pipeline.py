@@ -21,7 +21,6 @@ Safety: nothing is written while a stage of this project is still in the queue
 
 from __future__ import annotations
 
-import fcntl
 import logging
 import os
 import shlex
@@ -29,6 +28,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import IO
 
 from predcc_dft import (
     analysis,
@@ -165,6 +165,18 @@ def _submit(
     return out
 
 
+def _lock(fh: IO[str]) -> None:
+    """Exclusive lock on an open file (POSIX flock; msvcrt on Windows)."""
+    if sys.platform == "win32":  # local dry runs on Windows
+        import msvcrt
+
+        msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fh, fcntl.LOCK_EX)
+
+
 def advance(
     cfg: Config,
     submit: bool = False,
@@ -175,7 +187,7 @@ def advance(
     """Run one round. Returns a report dict (printed by the CLI)."""
     cfg.jobs_dir.mkdir(parents=True, exist_ok=True)
     with (cfg.jobs_dir / ".lock").open("w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        _lock(lock)
         return _advance(cfg, submit, round_no, config, force_prepare)
 
 

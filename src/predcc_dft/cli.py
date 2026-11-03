@@ -17,7 +17,9 @@ orca-input); every command is idempotent.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -39,8 +41,9 @@ account = ""
 partition = ""
 # e.g. ["orca/6.0.1", "openmpi/4.1.6", "crest/3.0", "xtb/6.7"]
 modules = []
-# Activate the environment that has predcc (and CENSO) installed:
-setup_lines = ["source {venv}/bin/activate"]
+# Activate the environment that has predcc (and CENSO) installed on the
+# cluster, e.g. ["source /home/you/PreDCC_DFT/.venv/bin/activate"]:
+setup_lines = [{setup}]
 scratch_root = ""   # e.g. "$TMPDIR"; empty = run ORCA in the task folder
 
 # [conformers]
@@ -87,10 +90,17 @@ def cmd_init(root: Path, example: bool) -> int:
     root.mkdir(parents=True, exist_ok=True)
     cdir = root / "config"
     made = []
-    venv = Path(sys.prefix)
+    # The SLURM jobs run on Linux: only a POSIX environment path is useful
+    # there. On Windows (local trials) leave it for the user to fill in.
+    # json.dumps gives a valid TOML basic string (quotes, backslashes).
+    setup = (
+        ""
+        if os.name == "nt"
+        else json.dumps(f"source {Path(sys.prefix).as_posix()}/bin/activate")
+    )
     files = {
         cdir / "settings.toml": STARTER_SETTINGS.format(
-            defaults=DATA_DIR / "settings.toml", venv=venv
+            defaults=(DATA_DIR / "settings.toml").as_posix(), setup=setup
         ),
         cdir / "methods.toml": (DATA_DIR / "methods.toml").read_text(),
         cdir / "censo2rc": (DATA_DIR / "censo2rc").read_text(),
