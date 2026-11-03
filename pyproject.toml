@@ -3,9 +3,9 @@ requires      = ["uv_build>=0.9.5,<0.10.0"]
 build-backend = "uv_build"
 
 [project]
-name            = "example-python-project"
-version         = "0.1.0"
-description     = "Add your description here"
+name            = "predcc-dft"
+version         = "0.2.0"
+description     = "DFT benchmarking of imine-type equilibria in acetonitrile (SOP Part II)"
 readme          = "README.md"
 requires-python = ">=3.14"
 license         = "MPL-2.0"
@@ -23,8 +23,13 @@ classifiers = [
 ]
 
 dependencies = [
-    "rdkit>=2025.9.1",
+    "rdkit>=2026.9.1",  # ETKDGv4 (step 3)
+    "tomli-w>=1.0",
 ]
+
+[project.optional-dependencies]
+# CENSO drives the step-5 DFT re-ranking (needs to be importable on the nodes).
+censo = ["censo>=3.0"]
 
 [dependency-groups]
 dev = [
@@ -37,7 +42,7 @@ dev = [
 ]
 
     [project.scripts]
-    example-pkg = "example_python_project:main"
+    predcc = "predcc_dft:main"
 
 [tool.interrogate]
 verbose                    = 2
@@ -71,7 +76,5 @@ lint.ignore = [
     [tool.ruff.lint.pydocstyle]
     convention = "google"
 
-[tool.uv.workspace]
-members = [
-    "example_python_package",
-]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
