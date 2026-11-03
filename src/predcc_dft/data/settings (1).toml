@@ -1,0 +1,8 @@
+# amines: one SMILES per line; an optional name may follow after a space.
+# Lines starting with '#' are comments.
+Nc1ccccc1 aniline
+NCc1ccccc1 benzylamine
+Nc1ccc(OC)cc1 4-methoxyaniline
+NC1CCCCC1 cyclohexylamine
+[NH3+]c1ccccc1.[Cl-] anilinium chloride
+CC(N)=O acetamide

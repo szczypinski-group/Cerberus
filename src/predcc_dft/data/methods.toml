@@ -1,0 +1,8 @@
+# aldehydes: one SMILES per line; an optional name may follow after a space.
+# Lines starting with '#' are comments.
+O=Cc1ccccc1 benzaldehyde
+O=Cc1ccc(cc1)[N+](=O)[O-] 4-nitrobenzaldehyde
+O=Cc1ccc(C=O)cc1 terephthalaldehyde
+O=Cc1ccccc1O salicylaldehyde
+CC(=O)c1ccccc1 acetophenone
+Nc1ccc(C=O)cc1 4-aminobenzaldehyde
