@@ -1,8 +1,181 @@
-# aldehydes: one SMILES per line; an optional name may follow after a space.
-# Lines starting with '#' are comments.
-O=Cc1ccccc1 benzaldehyde
-O=Cc1ccc(cc1)[N+](=O)[O-] 4-nitrobenzaldehyde
-O=Cc1ccc(C=O)cc1 terephthalaldehyde
-O=Cc1ccccc1O salicylaldehyde
-CC(=O)c1ccccc1 acetophenone
-Nc1ccc(C=O)cc1 4-aminobenzaldehyde
+# Method matrix (SOP 2.5 methods.toml, section 6): every label used anywhere.
+#
+# Copy to <project>/config/methods.toml (`predcc init` does this) to change it;
+# the project copy then replaces this file completely.
+#
+# A LEVEL of theory is a set of functionals x a set of basis sets. Each level
+# expands to one method per combination, labelled <functional>_<basis>, and
+# one command runs all of them:
+#
+#     predcc levels                          list levels and their methods
+#     predcc level double_hybrid --submit    run that whole level
+#
+# [functionals.<f>]   orca_keywords   functional part of the ORCA line
+#                     needs_aux_c     true for double hybrids (adds aux_c)
+#                     functional, family, dispersion, baseline: metadata
+# [basis_sets.<b>]    orca_keywords   basis part of the ORCA line
+#                     aux_c           RI-MP2 auxiliary basis for double hybrids
+#                     basis, zeta: metadata
+# [levels.<name>]     functionals = [...], basis_sets = [...]
+# [methods.<label>]   explicit methods with a fixed keyword line (composites,
+#                     the literature baseline); join a level with level = "...".
+# [solvation.<label>] solvation models; dG_solv = E(model) - E(gas) at the
+#                     [reference] solvation_keywords level (SOP 5.1 step 10).
+#
+# Every method runs as a gas-phase single point on each molecule's
+# r2SCAN-3c/CPCM best geometry (SOP 5.1 step 9); common_keywords and
+# common_blocks are added to every one. Check each keyword line on one small
+# molecule with your ORCA version first (`predcc orca-input --step sp_<label>`).
+
+schema_version = 1
+common_keywords = "TightSCF DefGrid3"
+# SOP 5.3: wavefunction stability check on every single point.
+common_blocks = """%scf
+  STABPerform true
+end"""
+
+# ================================================================ levels
+[levels.hybrid]
+functionals = ["b3lyp", "b3lypd3bj", "pbe0d4", "m062x"]
+basis_sets = ["def2tzvp"]
+
+[levels.range_separated]
+functionals = ["wb97xd3", "wb97mv"]
+basis_sets = ["def2svp", "def2tzvp", "def2qzvp", "madef2tzvp"]
+
+[levels.double_hybrid]
+functionals = ["revdsdpbep86d4", "pwpb95d4"]
+basis_sets = ["def2svp", "def2tzvp", "def2qzvp", "madef2tzvp"]
+
+# ================================================================ functionals
+[functionals.b3lyp]
+functional = "B3LYP"
+family = "hybrid"
+dispersion = "none"
+orca_keywords = "B3LYP"
+
+[functionals.b3lypd3bj]
+functional = "B3LYP-D3(BJ)"
+family = "hybrid"
+dispersion = "D3BJ"
+orca_keywords = "B3LYP D3BJ"
+
+[functionals.pbe0d4]
+functional = "PBE0-D4"
+family = "hybrid"
+dispersion = "D4"
+orca_keywords = "PBE0 D4"
+
+[functionals.m062x]
+functional = "M06-2X"
+family = "meta-hybrid"
+dispersion = "none"
+orca_keywords = "M062X"
+
+[functionals.wb97xd3]
+functional = "ωB97X-D3"
+family = "range-separated hybrid"
+dispersion = "D3"
+orca_keywords = "wB97X-D3"
+
+[functionals.wb97mv]
+functional = "ωB97M-V"
+family = "range-separated hybrid"
+dispersion = "VV10"
+orca_keywords = "wB97M-V"
+
+[functionals.revdsdpbep86d4]
+functional = "revDSD-PBEP86-D4"
+family = "double hybrid"
+dispersion = "D4"
+orca_keywords = "revDSD-PBEP86-D4/2021"
+needs_aux_c = true
+
+[functionals.pwpb95d4]
+functional = "PWPB95-D4"
+family = "double hybrid"
+dispersion = "D4"
+orca_keywords = "PWPB95 D4"
+needs_aux_c = true
+
+# ================================================================ basis sets
+[basis_sets.def2svp]
+basis = "def2-SVP"
+zeta = 2
+orca_keywords = "def2-SVP"
+aux_c = "def2-SVP/C"
+
+[basis_sets.def2tzvp]
+basis = "def2-TZVP"
+zeta = 3
+orca_keywords = "def2-TZVP"
+aux_c = "def2-TZVP/C"
+
+[basis_sets.def2qzvp]
+basis = "def2-QZVP"
+zeta = 4
+orca_keywords = "def2-QZVP"
+aux_c = "def2-QZVPP/C"
+
+[basis_sets.madef2tzvp]
+basis = "ma-def2-TZVP"
+zeta = 3
+orca_keywords = "ma-def2-TZVP"
+aux_c = "AutoAux"              # ORCA generates a matching /C basis
+
+# ================================================================ explicit methods
+[methods.b3lyp_631pgdp]
+functional = "B3LYP"
+basis = "6-31+G(d,p)"
+family = "hybrid"
+zeta = 2
+dispersion = "none"
+baseline = true                   # literature baseline, Morgan et al. 2024
+level = "baseline"
+orca_keywords = "B3LYP 6-31+G(d,p)"
+
+[methods.r2scan3c]
+functional = "r2SCAN-3c"
+basis = "def2-mTZVPP"
+family = "composite"
+zeta = 3
+dispersion = "D4"
+baseline = false
+level = "composite"
+orca_keywords = "r2SCAN-3c"
+
+[methods.b973c]
+functional = "B97-3c"
+basis = "def2-mTZVP"
+family = "composite"
+zeta = 3
+dispersion = "D3BJ"
+baseline = false
+level = "composite"
+orca_keywords = "B97-3c"
+
+# ================================================================ solvation models
+# gas is implicit (label "gas"): no solvation contribution.
+[solvation.smd_mecn]
+model = "SMD"
+solvent = "acetonitrile"
+orca_keywords = "CPCM(acetonitrile)"
+orca_blocks = """%cpcm
+  smd true
+  SMDsolvent "acetonitrile"
+end"""
+
+[solvation.cpcm_mecn]
+model = "CPCM"
+solvent = "acetonitrile"
+orca_keywords = "CPCM(acetonitrile)"
+orca_blocks = ""
+
+# openCOSMO-RS (ORCA >= 6) prints its own dG_solv; enable after checking that
+# 'parse = "cosmors"' reads your ORCA version's output.
+# [solvation.cosmors_mecn]
+# model = "openCOSMO-RS"
+# solvent = "acetonitrile"
+# orca_keywords = "COSMORS(acetonitrile)"
+# orca_blocks = ""
+# parse = "cosmors"
