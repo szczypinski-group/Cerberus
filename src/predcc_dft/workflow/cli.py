@@ -1,17 +1,18 @@
 """Command-line interface: ``predcc <command>`` (or ``python -m predcc_dft``).
 
-Everyday use is two commands, run from the project directory:
+A study is one folder: a shared trunk (inputs -> best.xyz) and two branches.
 
-    predcc init                 once: config/, inputs/, experimental/
-    predcc run --submit         everything else; repeats itself on SLURM
-    predcc level double_hybrid --submit
-                                one level of theory (functionals x basis sets)
-    predcc functional pwpb95d4 --submit
-                                one functional with all of its basis sets
+    predcc init                     once: create the study folders
+    predcc run --submit             trunk only: geometries of every molecule
+    predcc benchmark --submit       trunk + benchmark (method grid vs DLPNO)
+        --level double_hybrid       ... only that level of theory
+        --functional pwpb95d4       ... only that functional, all basis sets
+    predcc promote                  benchmark candidate -> production lock
+    predcc production --submit      trunk + production (locked method)
 
-Individual stages stay available for debugging and pilots (prepare,
-conformers, dft-opt, frequencies, check, reference, benchmark, analyse,
-orca-input); every command is idempotent.
+Every chain repeats itself on SLURM until nothing is left. Individual stages
+stay available for debugging and pilots (prepare, conformers, dft-opt,
+frequencies, check, analyse, orca-input); every command is idempotent.
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ scratch_root = ""   # e.g. "$TMPDIR"; empty = run ORCA in the task folder
 # dft_engine = "censo"          # or "orca" (plain ORCA optimisations)
 
 # [benchmark]
-# methods = []    # subset of config/methods.toml labels; [] = all
+# methods = []    # subset of benchmark/methods.toml labels; [] = all
 
 # [analysis.parents]
 # imine = "benzaldehyde + aniline"
@@ -60,7 +61,7 @@ scratch_root = ""   # e.g. "$TMPDIR"; empty = run ORCA in the task folder
 
 EXPERIMENTAL_EXAMPLE = """\
 # One file per measured equilibrium, named <reaction key>.toml (SOP 2.5).
-# Reaction keys are in reactions.toml / derived/reaction_energies.csv.
+# Reaction keys are in reactions.toml and the branch's reaction_energies.csv.
 # Rename to CND-<16 hex>.toml and fill in; files starting with '_' are ignored.
 schema_version = 1
 reaction = "CND-0000000000000000"
@@ -78,6 +79,14 @@ doi = ""
 """
 
 
+SELECTION_TEMPLATE = """\
+# {branch} subset: one aldehyde, amine or imine per line (name, SMILES,
+# compound key or InChIKey). Selected aldehyde/amine pairs bring their imines,
+# an imine brings its aldehyde and amine; water is always included.
+# No entries = every molecule of the study.
+"""
+
+
 def _print(summary: dict, indent: str = "  ") -> None:
     for key, val in summary.items():
         if isinstance(val, dict):
@@ -88,7 +97,7 @@ def _print(summary: dict, indent: str = "  ") -> None:
 
 
 def cmd_init(root: Path, example: bool) -> int:
-    """Create config/, inputs/ and experimental/ in a project directory."""
+    """Create a study: config/, inputs/, benchmark/, production/."""
     root.mkdir(parents=True, exist_ok=True)
     cdir = root / "config"
     made = []
@@ -104,11 +113,22 @@ def cmd_init(root: Path, example: bool) -> int:
         cdir / "settings.toml": STARTER_SETTINGS.format(
             defaults=(DATA_DIR / "settings.toml").as_posix(), setup=setup
         ),
-        cdir / "methods.toml": (DATA_DIR / "methods.toml").read_text(
-            encoding="utf-8"
-        ),
         cdir / "censo2rc": (DATA_DIR / "censo2rc").read_text(encoding="utf-8"),
-        root / "experimental" / "_example.toml": EXPERIMENTAL_EXAMPLE,
+        root / "benchmark" / "methods.toml": (
+            DATA_DIR / "methods.toml"
+        ).read_text(encoding="utf-8"),
+        root / "benchmark" / "molecules.txt": SELECTION_TEMPLATE.format(
+            branch="Benchmark"
+        ),
+        root / "benchmark" / "experimental" / "_example.toml": (
+            EXPERIMENTAL_EXAMPLE
+        ),
+        root / "production" / "molecules.txt": SELECTION_TEMPLATE.format(
+            branch="Production"
+        ),
+        root / "production" / "experimental" / "_example.toml": (
+            EXPERIMENTAL_EXAMPLE
+        ),
     }
     for name in ("aldehydes.txt", "amines.txt"):
         src = DATA_DIR / "examples" / name
@@ -123,13 +143,56 @@ def cmd_init(root: Path, example: bool) -> int:
             continue
         write_text(path, text)
         made.append(str(path.relative_to(root)))
-    print(f"project: {root.resolve()}")
+    print(f"study: {root.resolve()}")
     print(
         "  created: " + (", ".join(made) if made else "nothing (all present)")
     )
     print("next: edit config/settings.toml ([slurm]) and inputs/*.txt, then")
-    print("      predcc run            # check locally what will be submitted")
-    print("      predcc run --submit   # on the cluster login node")
+    print(
+        "      predcc benchmark            # dry run: what would be submitted"
+    )
+    print("      predcc benchmark --submit   # on the cluster login node")
+    print("      predcc promote              # once the ranking is final")
+    print(
+        "      predcc production --submit  # the locked method, any molecules"
+    )
+    return 0
+
+
+def cmd_promote(
+    cfg: Config,
+    method: str | None,
+    solvation: str | None,
+    version: str,
+    force: bool,
+) -> int:
+    """Write production/production.toml from the benchmark (or by hand)."""
+    from predcc_dft.protocol import lock
+    from predcc_dft.protocol.io import read_toml
+
+    evidence = None
+    if method is None or solvation is None:
+        cand_path = cfg.benchmark_dir / "derived" / "production_candidate.toml"
+        if not cand_path.exists():
+            print(
+                f"{cand_path} not found: finish the benchmark first, or "
+                "give --method and --solvation"
+            )
+            return 2
+        cand = read_toml(cand_path)
+        method = method or cand["energy"]["method"]
+        solvation = solvation or cand["energy"]["solvation"]
+        evidence = {
+            **cand.get("selection", {}),
+            "diagnostics": cand.get("diagnostics", {}),
+            "candidate_file": cand_path.relative_to(cfg.root).as_posix(),
+        }
+    the_lock = lock.build(cfg, method, solvation, version, evidence)
+    path = lock.write(cfg, the_lock, force)
+    print(f"production lock v{version}: {path}")
+    print(f"  energy:    {method}  ! {the_lock['energy']['orca_keywords']}")
+    print(f"  solvation: {solvation}")
+    print("next: predcc production --submit")
     return 0
 
 
@@ -148,8 +211,8 @@ def _print_levels(cfg: Config) -> None:
             for m in methods.functional_methods(cfg.methods, f)
         ]
         print(f"    {f:<20s} {', '.join(bases)}")
-    print("\nrun:  predcc level <level> --submit")
-    print("      predcc functional <functional> --submit")
+    print("\nrun:  predcc benchmark --level <level> --submit")
+    print("      predcc benchmark --functional <functional> --submit")
 
 
 def _need_molecules(cfg: Config) -> bool:
@@ -178,7 +241,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("-v", "--verbose", action="store_true")
     sub = ap.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("init", help="create config/, inputs/, experimental/")
+    p = sub.add_parser(
+        "init",
+        help="create a study: config/, inputs/, benchmark/, production/",
+    )
     p.add_argument("directory", nargs="?", type=Path)
     p.add_argument(
         "--example",
@@ -186,37 +252,59 @@ def build_parser() -> argparse.ArgumentParser:
         help="fill inputs/ with example lists",
     )
 
+    for name, hlp in (
+        ("run", "trunk only: inputs -> best.xyz for every molecule"),
+        ("benchmark", "trunk + benchmark branch (method grid vs DLPNO)"),
+        ("production", "trunk + production branch (the locked method)"),
+    ):
+        p = sub.add_parser(name, help=hlp)
+        p.add_argument(
+            "--submit",
+            action="store_true",
+            help="submit job arrays + a driver job that runs the next round",
+        )
+        p.add_argument("--round", type=int, default=1, help=argparse.SUPPRESS)
+        p.add_argument(
+            "--force-prepare", action="store_true", help="rerun steps 1-3"
+        )
+        if name == "benchmark":
+            p.add_argument(
+                "--level",
+                action="append",
+                default=[],
+                help="only this level of theory (repeatable)",
+            )
+            p.add_argument(
+                "--functional",
+                action="append",
+                default=[],
+                help="only this functional, all its basis sets (repeatable)",
+            )
+
     p = sub.add_parser(
-        "run", help="do everything possible now; --submit to run on SLURM"
+        "promote",
+        help="write production/production.toml (the lock)",
+        description="By default from benchmark/derived/"
+        "production_candidate.toml; --method/--solvation choose by hand "
+        "from benchmark/methods.toml.",
     )
+    p.add_argument("--method", help="method label (default: the candidate)")
     p.add_argument(
-        "--submit",
+        "--solvation", help="solvation label (default: the candidate)"
+    )
+    p.add_argument("--version", default="1.0", help="production_version")
+    p.add_argument(
+        "--force",
         action="store_true",
-        help="submit job arrays + a driver job that runs the next round",
-    )
-    p.add_argument("--round", type=int, default=1, help=argparse.SUPPRESS)
-    p.add_argument(
-        "--force-prepare", action="store_true", help="rerun steps 1-3"
-    )
-    p.add_argument(
-        "--level",
-        action="append",
-        default=[],
-        help="benchmark only this level of theory (repeatable)",
-    )
-    p.add_argument(
-        "--functional",
-        action="append",
-        default=[],
-        help="benchmark only this functional, all its basis sets (repeatable)",
+        help="overwrite an existing version with a different protocol",
     )
 
     p = sub.add_parser(
         "level",
         help="run whole levels of theory (functionals x basis sets)",
-        description="Same as `predcc run --level NAME ...`: every functional "
-        "x basis set of the level(s) on every molecule, then the ranking. "
-        "Earlier steps still run for molecules that need them.",
+        description="Same as `predcc benchmark --level NAME ...`: every "
+        "functional x basis set of the level(s) on every benchmark molecule, "
+        "then the ranking. Trunk steps still run where needed.",
     )
     p.add_argument("level", nargs="+", help="level name(s) from methods.toml")
     p.add_argument("--submit", action="store_true")
@@ -227,7 +315,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "functional",
         help="run functionals with every one of their basis sets",
-        description="Same as `predcc run --functional NAME ...`.",
+        description="Same as `predcc benchmark --functional NAME ...`.",
     )
     p.add_argument("functional", nargs="+", help="functional label(s)")
     p.add_argument("--submit", action="store_true")
@@ -247,21 +335,26 @@ def build_parser() -> argparse.ArgumentParser:
         ("conformers", "steps 4-5: write CREST (+ CENSO) job array"),
         ("dft-opt", "step 5, ORCA route: write optimisation job array"),
         ("frequencies", "step 6: write Opt+Freq job array (and retries)"),
-        ("reference", "step 8/10: write DLPNO + solvation job array"),
-        ("benchmark", "step 9: write method-matrix single-point job array"),
     ):
         p = sub.add_parser(name, help=hlp)
         p.add_argument("--force", action="store_true")
     sub.add_parser("check", help="step 7 only: sanity check and collapse")
-    sub.add_parser(
-        "analyse", help="steps 7, 10-11: collect results, rebuild derived/"
+    p = sub.add_parser(
+        "analyse", help="collect finished results, rebuild derived/ tables"
+    )
+    p.add_argument(
+        "chain",
+        nargs="?",
+        default="all",
+        choices=["all", "trunk", "benchmark", "production"],
     )
 
     p = sub.add_parser(
         "orca-input",
         help="one-off ORCA input + run.sh + job.slurm for any step",
-        description="Steps: dft_opt, freq, freq_retry, ref_x, ref_y, "
-        "solv_gas, solv_<solvation label>, sp_<method label>, custom",
+        description="Steps: dft_opt, freq, freq_retry; benchmark: ref_x, "
+        "ref_y, solv_gas, solv_<solvation label>, sp_<method label>; "
+        "production: prod_energy, prod_solv_gas, prod_solv_<label>; custom",
     )
     p.add_argument("--step", required=True)
     src = p.add_mutually_exclusive_group(required=True)
@@ -278,7 +371,7 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911, PLR0912
+def main(argv: list[str] | None = None) -> int:
     """Parse arguments and run one command."""
     args = build_parser().parse_args(argv)
     logging.basicConfig(
@@ -289,10 +382,19 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911, PLR0912
         return cmd_init(
             args.directory or args.root or Path.cwd(), args.example
         )
-
     cfg = load_config(args.config, args.root)
+    from predcc_dft.protocol import lock, project
+
+    try:
+        return _dispatch(cfg, args)
+    except (lock.LockError, project.SelectionError) as err:
+        print(err)
+        return 2
+
+
+def _dispatch(cfg: Config, args: argparse.Namespace) -> int:  # noqa: C901, PLR0911, PLR0912
+    """Run one command on a loaded configuration."""
     # Imported here so `predcc init` and --help work without RDKit.
-    from predcc_dft.energies import benchmark, reference
     from predcc_dft.species import prepare
     from predcc_dft.structures import conformers, dft_opt, frequencies, sanity
     from predcc_dft.workflow import orca_inputs, pipeline, status
@@ -301,7 +403,14 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911, PLR0912
     if cmd == "levels":
         _print_levels(cfg)
         return 0
-    if cmd in ("run", "level", "functional"):
+    if cmd == "promote":
+        return cmd_promote(
+            cfg, args.method, args.solvation, args.version, args.force
+        )
+    if cmd in ("run", "benchmark", "production", "level", "functional"):
+        chain = {"run": "trunk", "production": "production"}.get(
+            cmd, "benchmark"
+        )
         levels = list(getattr(args, "level", []) or [])
         functionals = list(getattr(args, "functional", []) or [])
         try:  # fail early on a typo
@@ -319,9 +428,17 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911, PLR0912
                 "functionals": functionals,
             }
         report = pipeline.advance(
-            cfg, args.submit, args.round, args.config, args.force_prepare
+            cfg,
+            args.submit,
+            args.round,
+            args.config,
+            args.force_prepare,
+            chain,
         )
-        print(f"PreDCC round {report.pop('round')} in {cfg.root}")
+        print(
+            f"PreDCC {report.pop('chain')} round {report.pop('round')} "
+            f"in {cfg.root}"
+        )
         _print(report)
         return 0
     if cmd == "cancel":
@@ -366,8 +483,6 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911, PLR0912
         "conformers": conformers.write_jobs,
         "dft-opt": dft_opt.write_jobs,
         "frequencies": frequencies.write_jobs,
-        "reference": reference.write_jobs,
-        "benchmark": benchmark.write_jobs,
     }
     if cmd in writers:
         _print(writers[cmd](cfg, args.force))
@@ -376,7 +491,19 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911, PLR0912
         _print(sanity.run(cfg))
         return 0
     if cmd == "analyse":
-        _print(pipeline.local_steps(cfg))
+        chains = (
+            ["trunk", "benchmark", "production"]
+            if args.chain == "all"
+            else [args.chain]
+        )
+        for chain in chains:
+            if (
+                chain == "production"
+                and not (cfg.production_dir / "production.toml").exists()
+            ):
+                continue
+            print(f"{chain}:")
+            _print(pipeline.local_steps(cfg, chain), "    ")
         return 0
     return 1
 

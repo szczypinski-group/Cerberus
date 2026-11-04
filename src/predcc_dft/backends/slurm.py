@@ -131,13 +131,19 @@ def write_single(cfg: Config, stage: str, task_dir: Path, label: str) -> Path:
     return script
 
 
-def write_array(cfg: Config, stage: str, task_dirs: list[Path]) -> Path | None:
-    """Write jobs/<stage>/manifest.txt and jobs/<stage>/<stage>.slurm.
+def write_array(
+    cfg: Config,
+    stage: str,
+    task_dirs: list[Path],
+    jobs_dir: Path | None = None,
+) -> Path | None:
+    """Write <jobs_dir>/<stage>/manifest.txt and <stage>.slurm (job array).
 
+    jobs_dir: the trunk's jobs/ (default) or a branch's <branch>/jobs/.
     Task folders already submitted ``[pipeline] max_submissions`` times are
-    left out and listed in jobs/<stage>/given_up.txt for inspection.
+    left out and listed in <stage>/given_up.txt for inspection.
     """
-    stage_dir = cfg.jobs_dir / stage
+    stage_dir = (jobs_dir or cfg.jobs_dir) / stage
     (stage_dir / "logs").mkdir(parents=True, exist_ok=True)
     limit = int(cfg["pipeline"]["max_submissions"])
     given_up = [d for d in task_dirs if records.submissions(d) >= limit]
@@ -213,6 +219,7 @@ def active_jobs() -> set[str]:
 
 
 def _ledger(cfg: Config) -> Path:
+    """jobs/submitted.toml: last array job of every stage (all chains)."""
     return cfg.jobs_dir / "submitted.toml"
 
 
@@ -248,9 +255,9 @@ def record_submission(
         )
 
 
-def manifest_tasks(cfg: Config, stage: str) -> list[Path]:
-    """Task folders listed in jobs/<stage>/manifest.txt."""
-    manifest = cfg.jobs_dir / stage / "manifest.txt"
+def manifest_tasks(cfg: Config, stage_dir: Path) -> list[Path]:
+    """Task folders listed in <stage_dir>/manifest.txt."""
+    manifest = stage_dir / "manifest.txt"
     if not manifest.exists():
         return []
     return [

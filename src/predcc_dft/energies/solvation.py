@@ -1,23 +1,23 @@
-"""SOP 5.1 step 10, 6.2: solvation free energies on each best geometry.
+"""SOP 5.1 step 10, 6.2: solvation free energies on a trunk best geometry.
 
-Per molecule (molecules/<key>/reference/):
-  solv_gas          solvation level ([reference] solvation_keywords), gas phase
-  solv_<label>      same level in every [solvation.<label>] of methods.toml
-dG_solv = E(model) - E(gas), or the value ORCA prints (openCOSMO-RS). The jobs
-run in the "reference" SLURM stage, next to the DLPNO-CCSD(T) reference.
+Two kinds of job per molecule, at the [energies] solvation_keywords level:
+  solv_gas          gas phase
+  solv_<label>      one per solvation model: every [solvation.<label>] of
+                    benchmark/methods.toml, or the locked model in production
+dG_solv = E(model) - E(gas), or the value ORCA prints (openCOSMO-RS).
 """
 
 from __future__ import annotations
 
-from predcc_dft.protocol import constants, methods
-from predcc_dft.protocol.config import Config
+from predcc_dft.protocol import constants
 
 
-def job_inputs(cfg: Config) -> dict[str, tuple[str, str]]:
-    """Task name -> (keywords, blocks) for every solvation job."""
-    level = cfg["reference"]["solvation_keywords"]
+def job_inputs(
+    level: str, models: dict[str, dict]
+) -> dict[str, tuple[str, str]]:
+    """Task name -> (keywords, blocks) for the gas job and every model."""
     jobs = {"solv_gas": (level, "")}
-    for label, model in methods.solvation_models(cfg.methods).items():
+    for label, model in models.items():
         jobs[f"solv_{label}"] = (
             f"{level} {model.get('orca_keywords', '')}".strip(),
             model.get("orca_blocks", ""),
@@ -25,14 +25,13 @@ def job_inputs(cfg: Config) -> dict[str, tuple[str, str]]:
     return jobs
 
 
-def dg_solv(cfg: Config, label: str, res: dict) -> float | None:
-    """dG_solv (kcal/mol) of one model, from its job and the gas job."""
-    model = methods.solvation_models(cfg.methods)[label]
+def dg_solv(label: str, model: dict, res: dict) -> float | None:
+    """dG_solv (kcal/mol) of one model from parsed outputs {task: parsed}."""
     if model.get("parse") == "cosmors":
-        val = res[f"solv_{label}"].get("dg_solv_cosmors")
+        val = res.get(f"solv_{label}", {}).get("dg_solv_cosmors")
         return None if val is None else val * constants.HARTREE_TO_KCAL
-    e_solv = res[f"solv_{label}"].get("final_energy")
-    e_gas = res["solv_gas"].get("final_energy")
+    e_solv = res.get(f"solv_{label}", {}).get("final_energy")
+    e_gas = res.get("solv_gas", {}).get("final_energy")
     if e_solv is None or e_gas is None:
         return None
     return (e_solv - e_gas) * constants.HARTREE_TO_KCAL

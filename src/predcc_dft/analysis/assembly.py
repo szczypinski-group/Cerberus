@@ -1,4 +1,4 @@
-"""SOP 5.1 step 11: assemble species G and reaction dE, dG, ddG, log K.
+"""SOP 5.1 step 11: species G and reaction dE, dG, ddG, log K.
 
 G(species) = E(method, gas, best geometry) + G_corr(r2SCAN-3c, step 6)
              + dG_solv(model) + RT ln(24.46)   (solvated models only)
@@ -10,12 +10,22 @@ from __future__ import annotations
 import logging
 import math
 
-from predcc_dft.protocol import constants, methods, project
+from predcc_dft.protocol import constants, project
 from predcc_dft.protocol.config import Config
 
 log = logging.getLogger(__name__)
 
-META = ("functional", "basis", "family", "zeta", "baseline")
+# Method metadata copied into every species / reaction / error row.
+META_COLUMNS = (
+    "functional",
+    "basis",
+    "family",
+    "zeta",
+    "baseline",
+    "level",
+    "functional_label",
+    "basis_label",
+)
 
 
 def rt_ln10(temperature: float) -> float:
@@ -23,79 +33,44 @@ def rt_ln10(temperature: float) -> float:
     return constants.R_KCAL * temperature * math.log(10)
 
 
-def method_meta(cfg: Config, label: str) -> dict:
-    """Plotting/grouping metadata of a method label."""
-    if label == constants.REFERENCE_LABEL:
-        return {
-            "functional": "DLPNO-CCSD(T)",
-            "basis": "CBS(X/Y)",
-            "family": "reference",
-            "zeta": "",
-            "baseline": False,
-            "level": "reference",
-            "functional_label": "",
-            "basis_label": "",
-        }
-    m = cfg.methods.get("methods", {}).get(label, {})
+def species_row(
+    rec: dict,
+    isomer: str,
+    method: str,
+    meta: dict,
+    model: str,
+    e_hartree: float,
+    terms: dict,
+    dg_solv_kcal: float,
+    t1: float | None = None,
+    ensemble: bool = True,
+) -> dict:
+    """One species_energies.csv row: every G term in its own column.
+
+    terms: energies.thermo.species_terms() of the molecule. The standard
+    state applies to solvated models only (gas-phase rows are 1 atm).
+    """
+    ss = terms["standard_state_kcal_mol"] if model != "gas" else 0.0
+    g_ens = terms["g_ensemble_correction_kcal_mol"] if ensemble else 0.0
+    g_corr = terms["g_corr_hartree"]
     return {
-        **{k: m.get(k, "") for k in META},
-        "level": ";".join(m.get("levels", [])),
-        "functional_label": m.get("functional_label", ""),
-        "basis_label": m.get("basis_label", ""),
+        "compound": rec["compound"],
+        "name": rec["name"],
+        "role": rec["role"],
+        "isomer": isomer,
+        "method": method,
+        **{k: meta.get(k, "") for k in META_COLUMNS},
+        "solvation": model,
+        "e_hartree": e_hartree,
+        "g_corr_hartree": g_corr,
+        "dg_solv_kcal_mol": dg_solv_kcal,
+        "standard_state_kcal_mol": ss,
+        "g_ensemble_correction_kcal_mol": g_ens,
+        "g_hartree": e_hartree
+        + g_corr
+        + (dg_solv_kcal + ss + g_ens) / constants.HARTREE_TO_KCAL,
+        "t1": t1,
     }
-
-
-def species_energies(cfg: Config) -> dict[tuple[str, str, str], dict]:
-    """(compound, method, solvation) -> energy components."""
-    out = {}
-    for rec in project.molecules(cfg):
-        data = project.reference_data(cfg, rec)
-        if data is None:
-            continue
-        electronic = dict(project.benchmark_energies(cfg, rec))
-        if "reference" in data:
-            electronic[constants.REFERENCE_LABEL] = data["reference"][
-                "e_cbs_hartree"
-            ]
-        g_corr = data["thermo"]["g_corr_hartree"]
-        ss = data["standard_state_kcal_mol"]
-        g_ens = (
-            data.get("g_ensemble_correction_kcal_mol", 0.0)
-            if cfg["analysis"].get("ensemble_correction", True)
-            else 0.0
-        )
-        t1s = [
-            data.get("reference", {}).get(k)
-            for k in ("t1_x", "t1_y")
-            if data.get("reference", {}).get(k) is not None
-        ]
-        solv = {"gas": 0.0}
-        for label in methods.solvation_models(cfg.methods):
-            entry = data["solvation"].get(label)
-            if isinstance(entry, dict):
-                solv[label] = entry["dg_solv_kcal_mol"]
-        for method, e in electronic.items():
-            for model, dg_solv in solv.items():
-                ss_m = ss if model != "gas" else 0.0
-                out[(rec["compound"], method, model)] = {
-                    "compound": rec["compound"],
-                    "name": rec["name"],
-                    "role": rec["role"],
-                    "isomer": data["isomer"],
-                    "method": method,
-                    **method_meta(cfg, method),
-                    "solvation": model,
-                    "e_hartree": e,
-                    "g_corr_hartree": g_corr,
-                    "dg_solv_kcal_mol": dg_solv,
-                    "standard_state_kcal_mol": ss_m,
-                    "g_ensemble_correction_kcal_mol": g_ens,
-                    "g_hartree": e
-                    + g_corr
-                    + (dg_solv + ss_m + g_ens) / constants.HARTREE_TO_KCAL,
-                    "t1": max(t1s) if t1s else None,
-                }
-    return out
 
 
 def _stoich(rxn: dict) -> list[tuple[str, int]]:
@@ -133,7 +108,7 @@ def reaction_energies(
     cfg: Config, species: dict, reactions: dict
 ) -> list[dict]:
     """dE, dG, ddG and log K for every reaction x method x solvation."""
-    temperature = cfg["reference"]["temperature_k"]
+    temperature = cfg["energies"]["temperature_k"]
     method_labels = sorted({k[1] for k in species})
     models = sorted({k[2] for k in species})
     parents = _parents(cfg, reactions)
@@ -168,7 +143,7 @@ def reaction_energies(
                         "type": rtype,
                         "linkages": ";".join(rxn["linkages"]),
                         "method": method,
-                        **method_meta(cfg, method),
+                        **{k: species[keys[0]][k] for k in META_COLUMNS},
                         "solvation": model,
                         "de_kcal_mol": de,
                         "dg_kcal_mol": dg,

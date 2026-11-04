@@ -6,6 +6,7 @@ a pilot calculation is identical to what the full run will do.
     predcc orca-input --step freq --molecule RISHSDLMXPLIHT
     predcc orca-input --step ref_x --xyz my.xyz --out pilot/ref_x
     predcc orca-input --step sp_wb97mv_def2tzvp --molecule RISHSDLMXPLIHT
+    predcc orca-input --step prod_energy --molecule RISHSDLMXPLIHT
     predcc orca-input --step custom --keywords "r2SCAN-3c SP" --xyz my.xyz
 """
 
@@ -15,8 +16,9 @@ from pathlib import Path
 
 from predcc_dft.backends import orca
 from predcc_dft.backends.slurm import orca_run_script, write_single
-from predcc_dft.energies import reference
-from predcc_dft.protocol import methods
+from predcc_dft.benchmark import reference as bench_reference
+from predcc_dft.production import stage as production_stage
+from predcc_dft.protocol import lock, methods
 from predcc_dft.protocol.config import Config
 from predcc_dft.protocol.io import format_xyz, read_toml, read_xyz_frames
 
@@ -31,13 +33,27 @@ FIXED_STEPS = {
 }
 
 
+def _production_jobs(cfg: Config) -> dict[str, tuple[str, str]]:
+    """prod_<task> -> (keywords, blocks) from the lock; {} without a lock."""
+    try:
+        the_lock = lock.read(cfg)
+    except lock.LockError:
+        return {}
+    return {
+        f"prod_{task}": inputs
+        for task, inputs in production_stage.tasks(the_lock).items()
+    }
+
+
 def steps(cfg: Config) -> dict[str, tuple[str, str]]:
     """Step name -> (SLURM resource stage, description)."""
     out = dict(FIXED_STEPS)
-    for job in reference.job_inputs(cfg):
-        out[job] = ("reference", "step 8/10: reference or solvation SP")
+    for job in bench_reference.job_inputs(cfg):
+        out[job] = ("reference", "benchmark: DLPNO reference or solvation SP")
     for label in cfg.methods.get("methods", {}):
-        out[f"sp_{label}"] = ("benchmark", f"step 9: {label} single point")
+        out[f"sp_{label}"] = ("benchmark", f"benchmark: {label} single point")
+    for job in _production_jobs(cfg):
+        out[job] = ("production", "production: locked method or solvation")
     return out
 
 
@@ -48,7 +64,8 @@ def keywords_for(
     blocks: str | None = None,
 ) -> tuple[str, str]:
     """Keywords and blocks of a step, with optional overrides."""
-    ref_jobs = reference.job_inputs(cfg)
+    ref_jobs = bench_reference.job_inputs(cfg)
+    prod_jobs = _production_jobs(cfg)
     if step == "dft_opt":
         kw, bl = cfg["dft_opt"]["keywords"], cfg["dft_opt"].get("blocks", "")
     elif step in ("freq", "freq_retry"):
@@ -59,6 +76,8 @@ def keywords_for(
             bl += "\n" + f["retry_blocks"]
     elif step in ref_jobs:
         kw, bl = ref_jobs[step]
+    elif step in prod_jobs:
+        kw, bl = prod_jobs[step]
     elif step.startswith("sp_") and step[3:] in cfg.methods.get("methods", {}):
         kw, bl = methods.method_inputs(cfg.methods, step[3:])
     elif step == "custom":

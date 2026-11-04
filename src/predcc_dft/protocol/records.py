@@ -161,6 +161,8 @@ CSV_COLUMNS = [
     "status",
     "reason",
     "geometry_from",
+    "branch",
+    "production_version",
     "electronic_hartree",
     "g_corr_hartree",
     "n_imaginary",
@@ -174,15 +176,32 @@ CSV_COLUMNS = [
 ]
 
 
-def collect_csv(cfg: Config) -> int:
-    """Rebuild derived/calculations.csv from every record.toml."""
+def collect_csv(
+    cfg: Config,
+    search_dir: Path | None = None,
+    out_dir: Path | None = None,
+    production_version: str | None = None,
+) -> int:
+    """Rebuild <out_dir>/calculations.csv from every record.toml below.
+
+    Defaults to the trunk (molecules/ -> derived/); each branch passes its
+    own folders, so trunk and branch tables never mix. production_version
+    keeps only that version's records.
+    """
+    search_dir = search_dir or cfg.molecules_dir
+    out_dir = out_dir or cfg.derived_dir
     rows = []
-    for path in sorted(cfg.molecules_dir.glob("**/record.toml")):
+    for path in sorted(search_dir.glob("**/record.toml")):
         rec = read_toml(path)
         calc = rec.get("calculation", {})
+        if (
+            production_version is not None
+            and calc.get("production_version") != production_version
+        ):
+            continue
         rows.append(
             {
-                **{k: calc.get(k, "") for k in CSV_COLUMNS[:10]},
+                **{k: calc.get(k, "") for k in CSV_COLUMNS[:12]},
                 "electronic_hartree": rec.get("energy", {}).get(
                     "electronic_hartree", ""
                 ),
@@ -200,8 +219,8 @@ def collect_csv(cfg: Config) -> int:
                 "directory": path.parent.relative_to(cfg.root).as_posix(),
             }
         )
-    cfg.derived_dir.mkdir(parents=True, exist_ok=True)
-    with (cfg.derived_dir / "calculations.csv").open(
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with (out_dir / "calculations.csv").open(
         "w", encoding="utf-8", newline=""
     ) as fh:
         w = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)

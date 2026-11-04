@@ -51,7 +51,7 @@ def candidate(
             ref_dg[r["reaction"]].append(r["dg_kcal_mol"])
     solv_spread = [max(v) - min(v) for v in ref_dg.values() if len(v) > 1]
     top = sorted(overall, key=lambda r: r["mae_kcal_mol"])[:3]
-    temperature = cfg["reference"]["temperature_k"]
+    temperature = cfg["energies"]["temperature_k"]
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "candidate - review, then copy to config/production.toml",

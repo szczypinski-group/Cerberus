@@ -1,6 +1,10 @@
-"""SOP 5.1 steps 8-10 (and 6): single points on each best geometry.
+"""SOP 5.1 steps 8-10: shared building blocks for single points on best.xyz.
 
-reference     step 8: DLPNO-CCSD(T)/CBS reference
-solvation     step 10: dG_solv for every solvation model
-benchmark     step 9: the functional x basis-set method matrix
+single_point  write, check and collect one ORCA single point (record.toml)
+reference     step 8: DLPNO-CCSD(T)/CBS jobs and extrapolation
+solvation     step 10: gas + solvation-model jobs, dG_solv
+thermo        trunk free-energy terms reused by every method
+
+Used by both branches (benchmark/, production/); which methods run, and where
+results are stored, is decided there.
 """

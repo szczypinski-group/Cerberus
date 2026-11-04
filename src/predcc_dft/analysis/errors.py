@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from predcc_dft.analysis import assembly
-from predcc_dft.protocol import constants
 from predcc_dft.protocol.config import Config
 from predcc_dft.protocol.io import read_toml
 
 log = logging.getLogger(__name__)
 
 
-def experimental(cfg: Config, reactions: dict) -> dict[str, dict]:
+def experimental(exp_dir: Path, reactions: dict) -> dict[str, dict]:
     """Reaction key -> {dg_kcal_mol, log_k, uncertainty} usable for comparison.
 
     Only dimensionless K in MeCN with water as a solute are comparable to the
@@ -24,9 +24,9 @@ def experimental(cfg: Config, reactions: dict) -> dict[str, dict]:
         for r in reactions.get(t, [])
     }
     out: dict[str, dict] = {}
-    if not cfg.experimental_dir.exists():
+    if not exp_dir.exists():
         return out
-    for path in sorted(cfg.experimental_dir.glob("*.toml")):
+    for path in sorted(exp_dir.glob("*.toml")):
         if path.name.startswith("_"):
             continue
         data = read_toml(path)
@@ -53,17 +53,29 @@ def experimental(cfg: Config, reactions: dict) -> dict[str, dict]:
     return out
 
 
-def errors(cfg: Config, rxn_rows: list[dict], exp: dict) -> list[dict]:
-    """Signed errors against the DLPNO reference and against experiment."""
-    temperature = cfg["reference"]["temperature_k"]
+def errors(
+    cfg: Config,
+    rxn_rows: list[dict],
+    exp: dict,
+    ref_label: str | None = None,
+) -> list[dict]:
+    """Signed errors against a computed reference and against experiment.
+
+    ref_label: method label of the computed reference (the benchmark's
+    DLPNO-CCSD(T)/CBS); None compares with experiment only (production).
+    """
+    temperature = cfg["energies"]["temperature_k"]
     index = {(r["reaction"], r["method"], r["solvation"]): r for r in rxn_rows}
-    ref_label = cfg["analysis"].get("reference", constants.REFERENCE_LABEL)
     out = []
     for row in rxn_rows:
         refs = []
         # SOP 8: gas-phase dE vs DLPNO ranks functionals (thermal and
         # solvation terms are identical and cancel); solution dG vs experiment.
-        if row["method"] != ref_label and row["solvation"] == "gas":
+        if (
+            ref_label is not None
+            and row["method"] != ref_label
+            and row["solvation"] == "gas"
+        ):
             ref = index.get((row["reaction"], ref_label, row["solvation"]))
             if ref is not None:
                 refs.append(
@@ -79,7 +91,7 @@ def errors(cfg: Config, rxn_rows: list[dict], exp: dict) -> list[dict]:
             # dE(method) - dE(DLPNO); the rest = dG(DLPNO, same thermal and
             # solvation terms) - experiment, i.e. thermal + solvation + ref.
             electronic = rest = None
-            if name == "experiment":
+            if name == "experiment" and ref_label is not None:
                 dl = index.get((row["reaction"], ref_label, row["solvation"]))
                 if dl is not None:
                     electronic = row["de_kcal_mol"] - dl["de_kcal_mol"]
@@ -104,12 +116,11 @@ def errors(cfg: Config, rxn_rows: list[dict], exp: dict) -> list[dict]:
     return out
 
 
-def errors_wide(cfg: Config, err_rows: list[dict]) -> list[dict]:
+def errors_wide(ref_label: str, err_rows: list[dict]) -> list[dict]:
     """Gas-phase errors vs DLPNO: one row per reaction, one column per method.
 
     Spreadsheet-friendly view of errors.csv (kcal/mol, method - reference).
     """
-    ref_label = cfg["analysis"].get("reference", constants.REFERENCE_LABEL)
     methods: list[str] = []
     rows: dict[str, dict] = {}
     for e in err_rows:

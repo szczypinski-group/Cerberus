@@ -1,13 +1,12 @@
 """Configuration: packaged defaults <- config/settings.toml <- --config.
 
-A project directory (any folder, default: the current one) holds
+A study folder (any folder, default: the current one) holds
 
-    config/settings.toml   optional overrides of the packaged defaults
-    config/methods.toml    optional replacement of the packaged method matrix
-    inputs/                aldehyde and amine lists
-    experimental/          measured equilibria (SOP 2.5), optional
-
-and everything the pipeline writes (molecules/, jobs/, derived/, ...).
+    config/settings.toml      optional overrides of the packaged defaults
+    inputs/                   aldehyde and amine lists
+    molecules/ jobs/ derived/ the shared trunk (steps 1-7)
+    benchmark/                branch: methods.toml, molecules.txt, results
+    production/               branch: production.toml (the lock), results
 """
 
 from __future__ import annotations
@@ -71,11 +70,21 @@ class Config(dict):
         return self.path(self["project"]["derived_dir"])
 
     @property
-    def experimental_dir(self) -> Path:
-        """Measured equilibria, one TOML per reaction key (SOP 2.5)."""
-        return self.path(
-            self["project"].get("experimental_dir", "experimental")
-        )
+    def benchmark_dir(self) -> Path:
+        """Benchmark branch: method grid, DLPNO reference, ranking."""
+        return self.path(self["project"].get("benchmark_dir", "benchmark"))
+
+    @property
+    def production_dir(self) -> Path:
+        """Production branch: one locked method for many molecules."""
+        return self.path(self["project"].get("production_dir", "production"))
+
+    def branch_dir(self, branch: str) -> Path:
+        """Root folder of a branch ("benchmark" or "production")."""
+        return {
+            "benchmark": self.benchmark_dir,
+            "production": self.production_dir,
+        }[branch]
 
     @property
     def molecules_file(self) -> Path:
@@ -99,8 +108,12 @@ def load_config(
         data = _merge(data, read_toml(project_settings))
     if user_config is not None:
         data = _merge(data, read_toml(user_config))
-    methods_file = root / "config" / "methods.toml"
-    methods = read_toml(
-        methods_file if methods_file.exists() else DEFAULT_METHODS
-    )
-    return Config(data, root, expand(methods))
+    cfg = Config(data, root, {})
+    candidates = [
+        cfg.benchmark_dir / "methods.toml",
+        root / "config" / "methods.toml",  # layout before the branches
+        DEFAULT_METHODS,
+    ]
+    methods_file = next(p for p in candidates if p.exists())
+    cfg.methods = expand(read_toml(methods_file))
+    return cfg

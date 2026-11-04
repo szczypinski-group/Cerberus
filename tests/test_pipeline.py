@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from predcc_dft import analysis
-from predcc_dft.energies import reference
+from predcc_dft.benchmark import report as benchmark_report
+from predcc_dft.energies import reference, thermo
 from predcc_dft.protocol import methods, project
 from predcc_dft.protocol.config import load_config
 from predcc_dft.protocol.io import format_xyz, read_xyz_frames
@@ -122,6 +122,17 @@ def orca_opt_output(energy: float) -> str:
     )
 
 
+def bench(root: Path, directory: str | Path) -> Path:
+    """Benchmark-branch folder of a trunk molecule folder (same key)."""
+    return (
+        root
+        / "benchmark"
+        / Path(directory).relative_to(
+            root if Path(directory).is_absolute() else Path()
+        )
+    )
+
+
 def to_txt(table: str) -> str:
     """'name,smiles' rows (compact test notation) -> 'SMILES name' lines."""
     lines = table.strip().splitlines()[1:]
@@ -201,7 +212,9 @@ def finish_single_points(root: Path, cfg: object) -> None:
         mdir = root / rec["directory"]
         n = len(read_xyz_frames(mdir / "best.xyz")[0][1])
         e = fake_energy(n) + noise(rec["compound"], 0.01)
-        ref = mdir / "reference"
+        ref = bench(root, rec["directory"]) / "reference"
+        if not ref.exists():  # not in this benchmark's selection
+            continue
         (ref / "ref_x" / "output.out").write_text(
             orca_dlpno_output(e, -0.02 * n)
         )
@@ -215,7 +228,8 @@ def finish_single_points(root: Path, cfg: object) -> None:
         (ref / "solv_cpcm_mecn" / "output.out").write_text(
             orca_sp_output(e - 0.004)
         )
-        for inp in sorted((mdir / "benchmark").glob("*/input.inp")):
+        methods_dir = bench(root, rec["directory"]) / "methods"
+        for inp in sorted(methods_dir.glob("*/input.inp")):
             label = inp.parent.name
             off = offsets.get(label, 0.001 + abs(noise(label, 0.001)))
             err = off * n + noise(rec["compound"] + label, off * 3)
@@ -233,7 +247,7 @@ def test_full_pipeline(tmp_path: Path) -> None:  # noqa: PLR0915
     cfg = load_config(root=root)
 
     # Round 1: steps 1-3, conformer jobs
-    rep = pipeline.advance(cfg)
+    rep = pipeline.advance(cfg, chain="benchmark")
     assert "prepare (steps 1-3)" in rep
     mols = tomllib.loads((root / "molecules.toml").read_text(encoding="utf-8"))
     assert set(mols) >= {"aldehyde", "amine", "imine", "water"}
@@ -267,12 +281,12 @@ def test_full_pipeline(tmp_path: Path) -> None:  # noqa: PLR0915
     assert str(root / "config" / "censo2rc") in run_sh
 
     # Unchanged inputs: no second prepare; conformer jobs rewritten as before
-    rep = pipeline.advance(cfg)
+    rep = pipeline.advance(cfg, chain="benchmark")
     assert "prepare (steps 1-3)" not in rep
 
     # Round 2: CENSO done -> frequency jobs
     mock_crest_censo(root, cfg)
-    rep = pipeline.advance(cfg)
+    rep = pipeline.advance(cfg, chain="benchmark")
     assert rep["jobs written"]["conformers"].startswith("0 tasks")
     attempts = sorted(root.glob("molecules/*/frequencies/*/attempt1"))
     assert attempts and rep["jobs written"]["frequencies"].startswith(
@@ -287,7 +301,7 @@ def test_full_pipeline(tmp_path: Path) -> None:  # noqa: PLR0915
     bad = attempts[0]
     for a in attempts:
         finish_freq(a, [-35.0, 50.0] if a == bad else [25.0, 50.0])
-    rep = pipeline.advance(cfg)
+    rep = pipeline.advance(cfg, chain="benchmark")
     assert rep["jobs written"]["frequencies"].startswith("1 tasks")
     retry = bad.parent / "attempt2"
     assert "VeryTightOpt" in (retry / "input.inp").read_text(encoding="utf-8")
@@ -303,7 +317,7 @@ def test_full_pipeline(tmp_path: Path) -> None:  # noqa: PLR0915
     el, x, y, z = atoms[0]
     atoms[0] = (el, x + 3.0, y + 3.0, z + 3.0)
     victim.write_text(format_xyz(atoms, "broken"))
-    rep = pipeline.advance(cfg)
+    rep = pipeline.advance(cfg, chain="benchmark")
     assert rep["check (step 7)"]["collapsed"] == n_mol
     st = tomllib.loads(
         (root / acyl["directory"] / "structure.toml").read_text(
@@ -318,40 +332,33 @@ def test_full_pipeline(tmp_path: Path) -> None:  # noqa: PLR0915
         f"{n_ref_jobs * n_mol} tasks"
     )
     assert rep["jobs written"]["benchmark"].startswith(f"{3 * n_mol} tasks")
-    ref_dir = root / acyl["directory"] / "reference"
+    ref_dir = bench(root, acyl["directory"]) / "reference"
     assert "cc-pVQZ" in (ref_dir / "ref_y" / "input.inp").read_text(
         encoding="utf-8"
     )
     smd = (ref_dir / "solv_smd_mecn" / "input.inp").read_text(encoding="utf-8")
     assert 'SMDsolvent "acetonitrile"' in smd
-    sp = (
-        root
-        / acyl["directory"]
-        / "benchmark"
-        / "wb97mv_def2tzvp"
-        / "input.inp"
-    ).read_text(encoding="utf-8")
+    methods_dir = bench(root, acyl["directory"]) / "methods"
+    sp = (methods_dir / "wb97mv_def2tzvp" / "input.inp").read_text(
+        encoding="utf-8"
+    )
     assert "! wB97M-V def2-TZVP TightSCF DefGrid3" in sp
     assert "STABPerform true" in sp
 
     # Round 5: every single point done -> derived tables and candidate
     finish_single_points(root, cfg)
-    rep = pipeline.advance(cfg)
+    rep = pipeline.advance(cfg, chain="benchmark")
     assert rep["jobs written"]["reference"].startswith("0 tasks")
     assert rep["jobs written"]["benchmark"].startswith("0 tasks")
-    assert rep["reference (step 8)"]["species_with_reference"] == n_mol
-    assert rep["status"]["all benchmark SPs (9)"] == n_mol
+    assert rep["reference (steps 8, 10)"]["species_with_reference"] == n_mol
+    assert rep["status"]["benchmark"]["all methods"] == n_mol
     rec = tomllib.loads(
-        (
-            root / acyl["directory"] / "benchmark" / "r2scan3c" / "record.toml"
-        ).read_text(encoding="utf-8")
+        (methods_dir / "r2scan3c" / "record.toml").read_text(encoding="utf-8")
     )
     assert rec["calculation"]["id"].endswith(".best.sp.r2scan3c.gas")
     assert rec["descriptors"]["homo_ev"] == pytest.approx(-6.8028)
     summary = tomllib.loads(
-        (root / acyl["directory"] / "benchmark" / "summary.toml").read_text(
-            encoding="utf-8"
-        )
+        (methods_dir / "summary.toml").read_text(encoding="utf-8")
     )
     assert summary["role"] == "imine" and summary["counts"]["completed"] == 3
     assert set(summary["methods"]) == {
@@ -362,13 +369,9 @@ def test_full_pipeline(tmp_path: Path) -> None:  # noqa: PLR0915
     wb = summary["methods"]["wb97mv_def2tzvp"]
     assert wb["electronic_hartree"] == pytest.approx(
         tomllib.loads(
-            (
-                root
-                / acyl["directory"]
-                / "benchmark"
-                / "wb97mv_def2tzvp"
-                / "record.toml"
-            ).read_text(encoding="utf-8")
+            (methods_dir / "wb97mv_def2tzvp" / "record.toml").read_text(
+                encoding="utf-8"
+            )
         )["energy"]["electronic_hartree"]
     )
     assert (
@@ -377,7 +380,7 @@ def test_full_pipeline(tmp_path: Path) -> None:  # noqa: PLR0915
     assert "range_separated" in wb["levels"]
     assert summary["reference"]["e_cbs_hartree"] < 0
     assert summary["geometry_sha256"] == rec["calculation"]["geometry_sha256"]
-    derived = root / "derived"
+    derived = root / "benchmark" / "derived"
     for name in (
         "calculations.csv",
         "species_energies.csv",
@@ -407,19 +410,19 @@ def test_full_pipeline(tmp_path: Path) -> None:  # noqa: PLR0915
         (root / "reactions.toml").read_text(encoding="utf-8")
     )
     key = reactions["condensation"][0]["key"]
-    (root / "experimental" / f"{key}.toml").write_text(
+    (root / "benchmark" / "experimental" / f"{key}.toml").write_text(
         f'schema_version = 1\nreaction = "{key}"\nlog_k = 1.5\n'
         'k_units = "dimensionless"\nwater_included = true\n'
         "temperature_k = 298.15\n"
     )
-    res = analysis.run(cfg)
+    res = benchmark_report.run(cfg)
     assert res["experimental_reactions"] == 1
     assert ",experiment," in (derived / "errors.csv").read_text(
         encoding="utf-8"
     )
 
     # Nothing left to do: the chain would stop here
-    rep = pipeline.advance(cfg)
+    rep = pipeline.advance(cfg, chain="benchmark")
     assert rep["next"] == "nothing to submit"
 
 
@@ -451,11 +454,13 @@ def test_submit_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert rep["submitted"] == {"conformers": "1001"}
     calls = log.read_text(encoding="utf-8").splitlines()
     assert calls[1].startswith("--parsable --dependency=afterany:1001")
-    assert calls[1].endswith("driver.slurm")
-    driver = (root / "jobs" / "driver" / "driver.slurm").read_text(
+    assert calls[1].endswith("trunk.slurm")
+    driver = (root / "jobs" / "driver" / "trunk.slurm").read_text(
         encoding="utf-8"
     )
-    assert "-m predcc_dft --root" in driver and "--round 2" in driver
+    assert (
+        "-m predcc_dft --root" in driver and "run --submit --round 2" in driver
+    )
     task = next(root.glob("molecules/*/conformers"))
     assert (task / ".submissions").read_text(encoding="utf-8").strip() == "1"
 
@@ -463,7 +468,7 @@ def test_submit_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pipeline.advance(cfg, submit=True, round_no=2)
     rep = pipeline.advance(cfg, submit=True, round_no=3)
     assert rep["submitted"] == "nothing"
-    assert rep["given up (see jobs/<stage>/given_up.txt)"]["conformers"] > 0
+    assert rep["given up (see <stage>/given_up.txt)"]["conformers"] > 0
 
 
 @pytest.mark.skipif(
@@ -623,9 +628,7 @@ def test_cli_and_helpers(
     cfg = load_config(root=root)
     scf, corr = reference.cbs(cfg, -100.0, -1.0, -100.1, -1.1)
     assert scf < -100.1 and corr < -1.1
-    assert reference.standard_state_kcal(298.15) == pytest.approx(
-        1.894, abs=2e-3
-    )
+    assert thermo.standard_state_kcal(298.15) == pytest.approx(1.894, abs=2e-3)
 
 
 @pytest.mark.skipif(
@@ -633,7 +636,7 @@ def test_cli_and_helpers(
 )
 def test_levels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`predcc level`: one command runs functionals x basis sets."""
-    from predcc_dft.energies import benchmark
+    from predcc_dft.benchmark import grid as benchmark
 
     root = make_project(
         tmp_path,
@@ -667,7 +670,7 @@ def test_levels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert (
         main(["--root", str(root), "level", "double_hybrid", "--submit"]) == 0
     )
-    driver = (root / "jobs" / "driver" / "driver.slurm").read_text(
+    driver = (root / "jobs" / "driver" / "benchmark.slurm").read_text(
         encoding="utf-8"
     )
     assert "--level double_hybrid" in driver
@@ -680,7 +683,7 @@ def test_functional_level_insular(
     """Functional and level runs end to end; nothing leaves the project."""
     import csv
 
-    from predcc_dft.energies import benchmark
+    from predcc_dft.benchmark import grid as benchmark
 
     home, elsewhere = tmp_path / "home", tmp_path / "elsewhere"
     home.mkdir()
@@ -694,9 +697,9 @@ def test_functional_level_insular(
         "name,smiles\naniline,Nc1ccccc1\nbenzylamine,NCc1ccccc1\n",
     )
     cfg = load_config(root=root)
-    pipeline.advance(cfg)
+    pipeline.advance(cfg, chain="benchmark")
     mock_crest_censo(root, cfg)
-    pipeline.advance(cfg)
+    pipeline.advance(cfg, chain="benchmark")
     for a in sorted(root.glob("molecules/*/frequencies/*/attempt1")):
         finish_freq(a, [25.0, 50.0])
 
@@ -705,23 +708,25 @@ def test_functional_level_insular(
     assert len(pwpb) == 4
     cfg["benchmark"] = {"functionals": ["pwpb95d4"], "methods": []}
     assert list(benchmark.methods(cfg)) == pwpb
-    rep = pipeline.advance(cfg)
+    rep = pipeline.advance(cfg, chain="benchmark")
     n_mol = len(project.molecules(cfg))
     assert rep["jobs written"]["benchmark"].startswith(f"{4 * n_mol} tasks")
     written = {
-        p.name for p in root.glob("molecules/*/benchmark/*") if p.is_dir()
+        p.name
+        for p in root.glob("benchmark/molecules/*/methods/*")
+        if p.is_dir()
     }
     assert written == set(pwpb)
 
     # Then the whole double-hybrid level: only the 4 missing methods are new
     cfg["benchmark"] = {"levels": ["double_hybrid"], "methods": []}
-    rep = pipeline.advance(cfg)
+    rep = pipeline.advance(cfg, chain="benchmark")
     assert rep["jobs written"]["benchmark"].startswith(f"{8 * n_mol} tasks")
     finish_single_points(root, cfg)
-    rep = pipeline.advance(cfg)
+    rep = pipeline.advance(cfg, chain="benchmark")
     assert rep["jobs written"]["benchmark"].startswith("0 tasks")
 
-    d = root / "derived"
+    d = root / "benchmark" / "derived"
     rank = list(
         csv.DictReader((d / "method_ranking.csv").open(encoding="utf-8"))
     )
@@ -782,22 +787,22 @@ def test_data_integrity(tmp_path: Path) -> None:  # noqa: PLR0915
         "name,smiles\naniline,Nc1ccccc1\nbenzylamine,NCc1ccccc1\n",
     )
     cfg = load_config(root=root)
-    pipeline.advance(cfg)
+    pipeline.advance(cfg, chain="benchmark")
     mock_crest_censo(root, cfg)
-    pipeline.advance(cfg)
+    pipeline.advance(cfg, chain="benchmark")
     attempts = sorted(root.glob("molecules/*/frequencies/*/attempt1"))
     bad = attempts[0]
     for a in attempts:
         finish_freq(a, [-40.0, 50.0] if a == bad else [25.0, 50.0])
 
     # A retry is due: that molecule must not collapse yet.
-    rep = pipeline.advance(cfg)
+    rep = pipeline.advance(cfg, chain="benchmark")
     assert rep["check (step 7)"]["still_running"] == 1
     victim = bad.parents[2]
     assert not (victim / "best.xyz").exists()
-    assert not (victim / "reference").exists()
+    assert not (bench(root, victim) / "reference").exists()
     finish_freq(bad.parent / "attempt2", [20.0, 300.0])
-    rep = pipeline.advance(cfg)
+    rep = pipeline.advance(cfg, chain="benchmark")
     n_mol = len(project.molecules(cfg))
     assert rep["check (step 7)"]["collapsed"] == n_mol
     st = tomllib.loads((victim / "structure.toml").read_text(encoding="utf-8"))
@@ -806,12 +811,17 @@ def test_data_integrity(tmp_path: Path) -> None:  # noqa: PLR0915
     # High T1 on one species' DLPNO output
     finish_single_points(root, cfg)
     aniline = next(r for r in project.molecules(cfg) if r["name"] == "aniline")
-    ref_x = root / aniline["directory"] / "reference" / "ref_x" / "output.out"
+    ref_x = (
+        bench(root, aniline["directory"])
+        / "reference"
+        / "ref_x"
+        / "output.out"
+    )
     ref_x.write_text(
         ref_x.read_text(encoding="utf-8").replace("0.010000", "0.045000")
     )
-    pipeline.advance(cfg)
-    d = root / "derived"
+    pipeline.advance(cfg, chain="benchmark")
+    d = root / "benchmark" / "derived"
     errs = list(csv.DictReader((d / "errors.csv").open(encoding="utf-8")))
     flagged = {e["reaction"] for e in errs if e["t1_flag"] == "True"}
     assert flagged, "aniline reactions should be T1-flagged"
@@ -843,10 +853,10 @@ def test_data_integrity(tmp_path: Path) -> None:  # noqa: PLR0915
         (root / "reactions.toml").read_text(encoding="utf-8")
     )
     key = reactions["condensation"][0]["key"]
-    (root / "experimental" / f"{key}.toml").write_text(
+    (root / "benchmark" / "experimental" / f"{key}.toml").write_text(
         f'reaction = "{key}"\nlog_k = 1.0\n'
     )
-    pipeline.advance(cfg)
+    pipeline.advance(cfg, chain="benchmark")
     exp_rows = [
         e
         for e in csv.DictReader((d / "errors.csv").open(encoding="utf-8"))
@@ -869,19 +879,18 @@ def test_data_integrity(tmp_path: Path) -> None:  # noqa: PLR0915
     atoms = read_xyz_frames(final)[0][1]
     atoms = [(el, x + 0.01, y, z) for el, x, y, z in atoms]
     final.write_text(format_xyz(atoms, "moved"))
-    rep = pipeline.advance(cfg)
-    n_bench = len(list((victim / "benchmark").glob("*/input.inp")))
+    rep = pipeline.advance(cfg, chain="benchmark")
+    vmethods = bench(root, victim) / "methods"
+    n_bench = len(list(vmethods.glob("*/input.inp")))
     assert rep["jobs written"]["benchmark"].startswith(f"{n_bench} tasks")
     assert rep["jobs written"]["reference"].startswith("5 tasks")
-    assert rep["benchmark (step 9)"]["stale"] == n_bench
+    assert rep["methods (step 9)"]["stale"] == n_bench
     rec = tomllib.loads(
-        (victim / "benchmark" / "r2scan3c" / "record.toml").read_text(
-            encoding="utf-8"
-        )
+        (vmethods / "r2scan3c" / "record.toml").read_text(encoding="utf-8")
     )
     assert rec["calculation"]["status"] == "stale"
     summary = tomllib.loads(
-        (victim / "benchmark" / "summary.toml").read_text(encoding="utf-8")
+        (vmethods / "summary.toml").read_text(encoding="utf-8")
     )
     assert summary["counts"]["stale"] == n_bench
     assert "electronic_hartree" not in summary["methods"]["r2scan3c"]

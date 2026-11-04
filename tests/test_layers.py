@@ -1,11 +1,13 @@
-"""Architecture test: imports only go downward between SOP levels.
+"""Architecture test: imports only go downward, and the branches are insular.
 
-    workflow  ->  species | structures | energies | analysis  ->  backends
-                                                               ->  chemistry
-                                                               ->  protocol
+    workflow  ->  benchmark | production        (the two branches)
+              ->  energies | analysis           (shared by both branches)
+              ->  species | structures          (the trunk, steps 1-7)
+              ->  backends | chemistry | protocol
 
-The SOP levels never import each other; a later level reads the files an
-earlier one wrote (through predcc_dft.protocol.project).
+The trunk levels never import each other or a branch; a later level reads
+the files an earlier one wrote (through predcc_dft.protocol.project). The
+benchmark and production branches never import each other.
 """
 
 from __future__ import annotations
@@ -26,12 +28,16 @@ ALLOWED = {
     "structures": {"structures"} | FOUNDATION,
     "energies": {"energies"} | FOUNDATION,
     "analysis": {"analysis", "protocol"},
+    "benchmark": {"benchmark", "energies", "analysis"} | FOUNDATION,
+    "production": {"production", "energies", "analysis"} | FOUNDATION,
     "workflow": {
         "workflow",
         "species",
         "structures",
         "energies",
         "analysis",
+        "benchmark",
+        "production",
     }
     | FOUNDATION,
 }

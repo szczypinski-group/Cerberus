@@ -37,7 +37,7 @@ def _stats(values: list[float], n_boot: int, rng: random.Random) -> dict:
 
 def ranking(cfg: Config, err_rows: list[dict]) -> list[dict]:
     """Metrics per reference x solvation x method x linkage class (and all)."""
-    temperature = cfg["reference"]["temperature_k"]
+    temperature = cfg["energies"]["temperature_k"]
     a = cfg["analysis"]
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for row in err_rows:
@@ -65,7 +65,7 @@ def ranking(cfg: Config, err_rows: list[dict]) -> list[dict]:
                 "reference": ref,
                 "solvation": solv,
                 "method": method,
-                **assembly.method_meta(cfg, method),
+                **{k: rows[0][k] for k in assembly.META_COLUMNS},
                 "linkage": linkage,
                 **st,
                 "mae_log_k": st["mae_kcal_mol"]
