@@ -146,17 +146,17 @@ file, `predcc run` adds the comparison with experiment.
 
 | Step | Module | Output |
 | --- | --- | --- |
-| 1 Lists within specification, classes by SMARTS | `compounds.py` | `molecules.toml`, `rejected.toml` |
-| 2 Products by reaction SMARTS (5.2), E/Z, azines, rotamers | `products.py` | `reactions.toml` (CND-/TRN- keys, 2.3) |
-| 3 ETKDGv4 + MMFF seeds | `coordinates.py` | `molecules/<key>/seeds/` |
-| 4–5 CREST (ALPB MeCN) → CENSO r²SCAN-3c/CPCM (or plain ORCA) | `conformers.py`, `dft_opt.py` | `conformers/` |
-| 6 Opt + Freq r²SCAN-3c/CPCM, qRRHO, retry | `frequencies.py` | `frequencies/CONF*/attempt*/record.toml` |
-| 7 Connectivity, E/Z and rotamer check; collapse | `sanity.py` | `structure.toml`, `best.xyz` |
-| 8 DLPNO-CCSD(T)/CBS(3/4) | `reference.py` | `reference/ref_x`, `ref_y` |
-| 9 Method matrix single points (6.1), by level | `benchmark.py`, `method_matrix.py` | `benchmark/<method>/record.toml` |
-| 10 ΔG_solv: SMD, CPCM (+ COSMO-RS) at r²SCAN-3c (6.2) | `reference.py` | `reference/solv_*`, `reference.toml` |
-| 11 + 8 ΔG assembly, errors, ranking, lock draft | `analysis.py` | `derived/` |
-| driver | `pipeline.py` | `jobs/` |
+| 1 Lists within specification, classes by SMARTS | `species/inputs.py` | `molecules.toml`, `rejected.toml` |
+| 2 Products by reaction SMARTS (5.2), E/Z, azines, rotamers | `species/products.py` | `reactions.toml` (CND-/TRN- keys, 2.3) |
+| 3 ETKDGv4 + MMFF seeds | `species/coordinates.py` | `molecules/<key>/seeds/` |
+| 4–5 CREST (ALPB MeCN) → CENSO r²SCAN-3c/CPCM (or plain ORCA) | `structures/conformers.py`, `structures/dft_opt.py` | `conformers/` |
+| 6 Opt + Freq r²SCAN-3c/CPCM, qRRHO, retry | `structures/frequencies.py` | `frequencies/CONF*/attempt*/record.toml` |
+| 7 Connectivity, E/Z and rotamer check; collapse | `structures/sanity.py` | `structure.toml`, `best.xyz` |
+| 8 DLPNO-CCSD(T)/CBS(3/4) | `energies/reference.py` | `reference/ref_x`, `ref_y` |
+| 9 Method matrix single points (6.1), by level | `energies/benchmark.py`, `protocol/methods.py` | `benchmark/<method>/record.toml` |
+| 10 ΔG_solv: SMD, CPCM (+ COSMO-RS) at r²SCAN-3c (6.2) | `energies/solvation.py` | `reference/solv_*`, `reference.toml` |
+| 11 + 8 ΔG assembly, errors, ranking, lock draft | `analysis/` | `derived/` |
+| driver | `workflow/pipeline.py` | `jobs/` |
 
 Every ORCA task writes a `record.toml` (SOP 2.5): a deterministic calculation
 ID, status (`completed | failed | rejected`), `geometry_from`, ORCA version, the
@@ -258,7 +258,7 @@ The individual stages (`prepare`, `conformers`, `dft-opt`, `frequencies`,
 
 - **ORCA keywords:** run one small molecule per keyword line (`orca-input`),
   especially DLPNO, `revDSD-PBEP86-D4/2021`, `STABPerform` and the SMD block.
-- **Output parsing:** the strings matched in `orca.py` (`E(0)`,
+- **Output parsing:** the strings matched in `backends/orca.py` (`E(0)`,
   `Final correlation energy`, `G-E(el)`, orbital energies, the COSMO-RS
   `dGsolv`) were tested only against mocked output. Compare them with one real
   output from your ORCA version.
@@ -282,6 +282,31 @@ The individual stages (`prepare`, `conformers`, `dft-opt`, `frequencies`,
 - Reactions live in one `reactions.toml`, not one file per reaction.
 - ORCA outputs are not gzipped, and figures (SOP 2.7) are not generated yet.
   The tidy CSVs in `derived/` are ready for them.
+
+## Code layout
+
+One package per SOP level, on top of shared foundations:
+
+```
+src/predcc_dft/
+├── protocol/     SOP Part I §2, the data protocol: config, file I/O, record.toml,
+│                 methods.toml schema, constants, hand-over files between levels
+├── chemistry/    SOP 2.2/2.3 identifiers and 5.2 SMARTS, shared chemistry
+├── backends/     ORCA and SLURM adapters (no science)
+├── species/      SOP 5.1 steps 1-3: inputs, imines, 3D seeds
+├── structures/   SOP 5.1 steps 4-7: CREST/CENSO, Opt+Freq, checks, best.xyz
+├── energies/     SOP 5.1 steps 8-10 + §6: DLPNO reference, solvation, benchmark
+├── analysis/     SOP 5.1 step 11, §2.7, §8: ΔG, errors, ranking, production draft
+└── workflow/     the predcc command, the SLURM round driver, status
+```
+
+**The dependency rule.** Imports only go downward. `workflow` uses the SOP
+levels, and the levels use the foundations. The SOP levels never import each
+other: a later level reads only the files an earlier one wrote, through
+`protocol/project.py` (`molecules.toml`, `structure.toml`, `reference.toml`,
+records). `tests/test_layers.py` fails if any module breaks this, so new code
+has to go into the right level. Later SOP parts (descriptors, TS, ML,
+screening) belong in new sibling packages next to `energies/`.
 
 ## Development
 
