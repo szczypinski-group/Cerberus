@@ -15,17 +15,14 @@ from pathlib import Path
 
 import pytest
 
-from predcc_dft import (
-    analysis,
-    conformers,
-    dft_opt,
-    frequencies,
-    orca_inputs,
-    pipeline,
-    reference,
-)
-from predcc_dft.cli import cmd_init, main
-from predcc_dft.io_utils import format_xyz, load_config, read_xyz_frames
+from predcc_dft import analysis
+from predcc_dft.energies import reference
+from predcc_dft.protocol import methods, project
+from predcc_dft.protocol.config import load_config
+from predcc_dft.protocol.io import format_xyz, read_xyz_frames
+from predcc_dft.structures import dft_opt, frequencies
+from predcc_dft.workflow import orca_inputs, pipeline
+from predcc_dft.workflow.cli import cmd_init, main
 
 ALDEHYDES = (
     "name,smiles\nbenzaldehyde,O=Cc1ccccc1\n"
@@ -146,7 +143,7 @@ def make_project(tmp_path: Path, aldehydes: str, nucleophiles: str) -> Path:
 
 def mock_crest_censo(root: Path, cfg: object) -> None:
     """CREST: the seed itself; CENSO: every pooled frame, increasing G."""
-    for rec in conformers.molecules(cfg):
+    for rec in project.molecules(cfg):
         mdir = root / rec["directory"]
         frames, n = [], 1
         for iso in rec["isomers"]:
@@ -200,7 +197,7 @@ def finish_single_points(root: Path, cfg: object) -> None:
         "r2scan3c": 0.0015,
         "wb97mv_def2tzvp": 0.0,
     }
-    for rec in conformers.molecules(cfg):
+    for rec in project.molecules(cfg):
         mdir = root / rec["directory"]
         n = len(read_xyz_frames(mdir / "best.xyz")[0][1])
         e = fake_energy(n) + noise(rec["compound"], 0.01)
@@ -257,7 +254,7 @@ def test_full_pipeline(tmp_path: Path) -> None:  # noqa: PLR0915
     acyl = next(c for c in mols["imine"] if c["linkage"] == "acylhydrazone")
     labels = {s["label"] for i in acyl["isomers"] for s in i["seeds"]}
     assert labels >= {"E_syn", "E_anti", "Z_syn", "Z_anti"}
-    n_mol = len(conformers.molecules(cfg))
+    n_mol = len(project.molecules(cfg))
     assert rep["jobs written"]["conformers"].startswith(f"{n_mol} tasks")
     script = (root / "jobs" / "conformers" / "conformers.slurm").read_text(
         encoding="utf-8"
@@ -316,7 +313,7 @@ def test_full_pipeline(tmp_path: Path) -> None:  # noqa: PLR0915
     conf1 = next(c for c in st["conformer"] if c["conformer"] == "CONF1")
     assert conf1["sanity"] == "failed" and "connectivity" in conf1["reason"]
     assert abs(sum(st["populations_by_isomer"].values()) - 1.0) < 1e-3
-    n_ref_jobs = 3 + len(reference.solvation_models(cfg))
+    n_ref_jobs = 3 + len(methods.solvation_models(cfg.methods))
     assert rep["jobs written"]["reference"].startswith(
         f"{n_ref_jobs * n_mol} tasks"
     )
@@ -351,6 +348,35 @@ def test_full_pipeline(tmp_path: Path) -> None:  # noqa: PLR0915
     )
     assert rec["calculation"]["id"].endswith(".best.sp.r2scan3c.gas")
     assert rec["descriptors"]["homo_ev"] == pytest.approx(-6.8028)
+    summary = tomllib.loads(
+        (root / acyl["directory"] / "benchmark" / "summary.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert summary["role"] == "imine" and summary["counts"]["completed"] == 3
+    assert set(summary["methods"]) == {
+        "b3lyp_631pgdp",
+        "r2scan3c",
+        "wb97mv_def2tzvp",
+    }
+    wb = summary["methods"]["wb97mv_def2tzvp"]
+    assert wb["electronic_hartree"] == pytest.approx(
+        tomllib.loads(
+            (
+                root
+                / acyl["directory"]
+                / "benchmark"
+                / "wb97mv_def2tzvp"
+                / "record.toml"
+            ).read_text(encoding="utf-8")
+        )["energy"]["electronic_hartree"]
+    )
+    assert (
+        wb["functional_label"] == "wb97mv" and wb["basis_label"] == "def2tzvp"
+    )
+    assert "range_separated" in wb["levels"]
+    assert summary["reference"]["e_cbs_hartree"] < 0
+    assert summary["geometry_sha256"] == rec["calculation"]["geometry_sha256"]
     derived = root / "derived"
     for name in (
         "calculations.csv",
@@ -481,7 +507,7 @@ def test_orca_route(tmp_path: Path) -> None:
     pipeline.advance(cfg)
     acyl = next(
         r
-        for r in conformers.molecules(cfg)
+        for r in project.molecules(cfg)
         if r.get("linkage") == "acylhydrazone"
     )
     run_sh = (root / acyl["directory"] / "conformers" / "run.sh").read_text(
@@ -489,7 +515,7 @@ def test_orca_route(tmp_path: Path) -> None:
     )
     assert "crest ../../seeds/E_syn.xyz" in run_sh and "censo -i" not in run_sh
 
-    for rec in conformers.molecules(cfg):
+    for rec in project.molecules(cfg):
         mdir = root / rec["directory"] / "conformers"
         for iso in rec["isomers"]:
             for seed in iso["seeds"]:
@@ -535,7 +561,7 @@ def test_orca_input(tmp_path: Path) -> None:
     )
     cfg = load_config(root=root)
     pipeline.advance(cfg)
-    key = next(r for r in conformers.molecules(cfg) if r["role"] == "imine")[
+    key = next(r for r in project.molecules(cfg) if r["role"] == "imine")[
         "compound"
     ]
     expect = {
@@ -607,7 +633,7 @@ def test_cli_and_helpers(
 )
 def test_levels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`predcc level`: one command runs functionals x basis sets."""
-    from predcc_dft import benchmark, method_matrix
+    from predcc_dft.energies import benchmark
 
     root = make_project(
         tmp_path,
@@ -615,17 +641,15 @@ def test_levels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "name,smiles\naniline,Nc1ccccc1\n",
     )
     cfg = load_config(root=root)
-    dh = method_matrix.level_methods(cfg.methods, "double_hybrid")
+    dh = methods.level_methods(cfg.methods, "double_hybrid")
     assert len(dh) == 8 and "revdsdpbep86d4_def2tzvp" in dh
     kw = cfg.methods["methods"]["revdsdpbep86d4_def2tzvp"]["orca_keywords"]
     assert kw == "revDSD-PBEP86-D4/2021 def2-TZVP def2-TZVP/C"
     hyb = cfg.methods["methods"]["b3lyp_def2tzvp"]["orca_keywords"]
     assert hyb == "B3LYP def2-TZVP"  # no aux basis for hybrids
-    assert method_matrix.level_methods(cfg.methods, "baseline") == [
-        "b3lyp_631pgdp"
-    ]
+    assert methods.level_methods(cfg.methods, "baseline") == ["b3lyp_631pgdp"]
     with pytest.raises(KeyError, match="unknown level"):
-        method_matrix.level_methods(cfg.methods, "tripple_hybrid")
+        methods.level_methods(cfg.methods, "tripple_hybrid")
 
     # Levels override nothing else; they pick the benchmark methods.
     cfg["benchmark"] = {"levels": ["double_hybrid"], "methods": []}
@@ -656,7 +680,7 @@ def test_functional_level_insular(
     """Functional and level runs end to end; nothing leaves the project."""
     import csv
 
-    from predcc_dft import benchmark, method_matrix
+    from predcc_dft.energies import benchmark
 
     home, elsewhere = tmp_path / "home", tmp_path / "elsewhere"
     home.mkdir()
@@ -677,14 +701,16 @@ def test_functional_level_insular(
         finish_freq(a, [25.0, 50.0])
 
     # One functional with all of its basis sets
-    pwpb = method_matrix.functional_methods(cfg.methods, "pwpb95d4")
+    pwpb = methods.functional_methods(cfg.methods, "pwpb95d4")
     assert len(pwpb) == 4
     cfg["benchmark"] = {"functionals": ["pwpb95d4"], "methods": []}
     assert list(benchmark.methods(cfg)) == pwpb
     rep = pipeline.advance(cfg)
-    n_mol = len(conformers.molecules(cfg))
+    n_mol = len(project.molecules(cfg))
     assert rep["jobs written"]["benchmark"].startswith(f"{4 * n_mol} tasks")
-    written = {p.name for p in root.glob("molecules/*/benchmark/*")}
+    written = {
+        p.name for p in root.glob("molecules/*/benchmark/*") if p.is_dir()
+    }
     assert written == set(pwpb)
 
     # Then the whole double-hybrid level: only the 4 missing methods are new
@@ -707,7 +733,7 @@ def test_functional_level_insular(
         and r["solvation"] == "gas"
     ]
     assert {r["method"] for r in dh} == set(
-        method_matrix.level_methods(cfg.methods, "double_hybrid")
+        methods.level_methods(cfg.methods, "double_hybrid")
     )
     assert {r["functional_label"] for r in dh} == {
         "revdsdpbep86d4",
@@ -731,11 +757,11 @@ def test_functional_level_insular(
         and r["solvation"] == "gas"
     )
     assert row["n_methods"] == "8" and row["best_method"] in pwpb + [
-        m for m in method_matrix.level_methods(cfg.methods, "double_hybrid")
+        m for m in methods.level_methods(cfg.methods, "double_hybrid")
     ]
     wide = list(csv.DictReader((d / "errors_wide.csv").open(encoding="utf-8")))
     assert wide and set(
-        method_matrix.level_methods(cfg.methods, "double_hybrid")
+        methods.level_methods(cfg.methods, "double_hybrid")
     ) <= set(wide[0])
 
     # Insular: nothing in HOME or the working directory, relative paths only
@@ -772,16 +798,14 @@ def test_data_integrity(tmp_path: Path) -> None:  # noqa: PLR0915
     assert not (victim / "reference").exists()
     finish_freq(bad.parent / "attempt2", [20.0, 300.0])
     rep = pipeline.advance(cfg)
-    n_mol = len(conformers.molecules(cfg))
+    n_mol = len(project.molecules(cfg))
     assert rep["check (step 7)"]["collapsed"] == n_mol
     st = tomllib.loads((victim / "structure.toml").read_text(encoding="utf-8"))
     assert st["g_ensemble_correction_kcal_mol"] <= 0.0
 
     # High T1 on one species' DLPNO output
     finish_single_points(root, cfg)
-    aniline = next(
-        r for r in conformers.molecules(cfg) if r["name"] == "aniline"
-    )
+    aniline = next(r for r in project.molecules(cfg) if r["name"] == "aniline")
     ref_x = root / aniline["directory"] / "reference" / "ref_x" / "output.out"
     ref_x.write_text(
         ref_x.read_text(encoding="utf-8").replace("0.010000", "0.045000")
@@ -856,6 +880,11 @@ def test_data_integrity(tmp_path: Path) -> None:  # noqa: PLR0915
         )
     )
     assert rec["calculation"]["status"] == "stale"
+    summary = tomllib.loads(
+        (victim / "benchmark" / "summary.toml").read_text(encoding="utf-8")
+    )
+    assert summary["counts"]["stale"] == n_bench
+    assert "electronic_hartree" not in summary["methods"]["r2scan3c"]
     victim_key = victim.name
     species = list(
         csv.DictReader((d / "species_energies.csv").open(encoding="utf-8"))
@@ -868,7 +897,7 @@ def test_data_integrity(tmp_path: Path) -> None:  # noqa: PLR0915
 
 def test_text_input(tmp_path: Path) -> None:
     """One SMILES per line; optional name; comments; '#' in a SMILES."""
-    from predcc_dft.compounds import read_list
+    from predcc_dft.species.inputs import read_list
 
     f = tmp_path / "amines.txt"
     f.write_text(
@@ -900,7 +929,7 @@ def test_init_settings_parse(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, os_name: str
 ) -> None:
     """config/settings.toml from init is valid TOML on Linux and Windows."""
-    from predcc_dft import cli
+    from predcc_dft.workflow import cli
 
     monkeypatch.setattr(cli.os, "name", os_name)
     monkeypatch.setattr(cli.sys, "prefix", "C:\\Users\\me\\.venv")

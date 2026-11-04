@@ -13,7 +13,7 @@ SCHEMA_VERSION = 1
 
 def main() -> int:
     """Run the command-line interface."""
-    from predcc_dft.cli import main as _main
+    from predcc_dft.workflow.cli import main as _main
 
     return _main()
 

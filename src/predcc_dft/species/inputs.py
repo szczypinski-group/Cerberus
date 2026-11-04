@@ -6,9 +6,42 @@ import csv
 from pathlib import Path
 
 from rdkit import Chem
+from rdkit.Chem.MolStandardize import rdMolStandardize
 
-from predcc_dft import chem
-from predcc_dft.io_utils import Config, read_toml
+from predcc_dft.chemistry import identifiers, smarts
+from predcc_dft.protocol.config import Config
+from predcc_dft.protocol.io import read_toml
+
+
+class InputError(ValueError):
+    """Molecule rejected at step 1, with a reason."""
+
+
+def standardise(
+    smiles: str, strip_salts: bool = True, neutralise: bool = True
+) -> tuple[Chem.Mol, list[str]]:
+    """Parse, keep the largest fragment, neutralise, sanitise.
+
+    Returns (mol, notes).
+    """
+    notes: list[str] = []
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise InputError("unparseable SMILES")
+    if len(Chem.GetMolFrags(mol)) > 1:
+        if not strip_salts:
+            raise InputError("multiple fragments")
+        chooser = rdMolStandardize.LargestFragmentChooser(preferOrganic=True)
+        removed = Chem.MolToSmiles(mol)
+        mol = chooser.choose(mol)
+        notes.append(f"salt/fragments stripped from {removed}")
+    if neutralise and Chem.GetFormalCharge(mol) != 0:
+        before = Chem.MolToSmiles(mol)
+        mol = rdMolStandardize.Uncharger().uncharge(mol)
+        if Chem.MolToSmiles(mol) != before:
+            notes.append(f"neutralised from {before}")
+    Chem.SanitizeMol(mol)
+    return mol, notes
 
 
 def read_list(path: Path) -> list[dict]:
@@ -70,42 +103,42 @@ def read_list(path: Path) -> list[dict]:
 
 
 def _check_common(mol: Chem.Mol, spec: dict) -> None:
-    props = chem.properties(mol)
+    props = identifiers.properties(mol)
     elements = {a.GetSymbol() for a in mol.GetAtoms()} | {"H"}
     bad = sorted(elements - set(spec["allowed_elements"]))
     if bad:
-        raise chem.InputError(f"disallowed elements: {', '.join(bad)}")
+        raise InputError(f"disallowed elements: {', '.join(bad)}")
     if spec.get("neutral_only", True) and props["charge"] != 0:
-        raise chem.InputError(f"net charge {props['charge']}")
+        raise InputError(f"net charge {props['charge']}")
     if props["multiplicity"] != 1:
-        raise chem.InputError("radical / open shell")
+        raise InputError("radical / open shell")
     if props["heavy_atoms"] > spec["max_heavy_atoms"]:
-        raise chem.InputError(
+        raise InputError(
             f"{props['heavy_atoms']} heavy atoms > {spec['max_heavy_atoms']}"
         )
     if props["rotatable_bonds"] > spec["max_rotatable_bonds"]:
-        raise chem.InputError(
+        raise InputError(
             f"{props['rotatable_bonds']} rotatable bonds > "
             f"{spec['max_rotatable_bonds']}"
         )
 
 
 def _check_exclusions(mol: Chem.Mol, exclusions: dict) -> None:
-    for name, smarts in exclusions.items():
-        patt = Chem.MolFromSmarts(smarts)
+    for name, pattern in exclusions.items():
+        patt = Chem.MolFromSmarts(pattern)
         if patt is None:
-            raise ValueError(f"bad exclusion SMARTS {name}: {smarts}")
+            raise ValueError(f"bad exclusion SMARTS {name}: {pattern}")
         if mol.HasSubstructMatch(patt):
-            raise chem.InputError(f"competing group: {name}")
+            raise InputError(f"competing group: {name}")
 
 
 def classify_nucleophile(mol: Chem.Mol) -> dict[str, list[int]]:
     """Reacting NH2 atom indices per nucleophile class (input classes only)."""
     found: dict[str, list[int]] = {}
-    for cls, smarts in chem.NUCLEOPHILE_CLASSES.items():
+    for cls, pattern in smarts.NUCLEOPHILE_CLASSES.items():
         if cls == "hydrazone":
             continue
-        sites = chem.match_sites(mol, smarts)
+        sites = smarts.match_sites(mol, pattern)
         if sites:
             found[cls] = sites
     return found
@@ -121,16 +154,16 @@ def screen(
     for entry in entries:
         record = dict(entry, role=role)
         try:
-            mol, notes = chem.standardise(
+            mol, notes = standardise(
                 entry["smiles"],
                 spec.get("strip_salts", True),
                 spec.get("neutralise", True),
             )
             _check_common(mol, spec)
             if role == "aldehyde":
-                sites = chem.match_sites(mol, chem.ALDEHYDE_SMARTS)
+                sites = smarts.match_sites(mol, smarts.ALDEHYDE_SMARTS)
                 if not sites:
-                    raise chem.InputError(
+                    raise InputError(
                         "no aldehyde group "
                         "(ketones and formaldehyde not supported)"
                     )
@@ -138,28 +171,26 @@ def screen(
             else:
                 found = classify_nucleophile(mol)
                 if not found:
-                    raise chem.InputError(
-                        "no reactive NH2 of a supported class"
-                    )
+                    raise InputError("no reactive NH2 of a supported class")
                 allowed = set(cfg["products"]["linkages"])
                 classes = {
                     c: s
                     for c, s in found.items()
-                    if chem.CLASS_TO_LINKAGE[c] in allowed
+                    if smarts.CLASS_TO_LINKAGE[c] in allowed
                 }
                 if not classes:
-                    raise chem.InputError(
+                    raise InputError(
                         f"{', '.join(found)}: product class not enabled in "
                         "[products] linkages"
                     )
                 sites = sorted({i for s in classes.values() for i in s})
             if len(sites) > spec["max_reactive_sites"]:
-                raise chem.InputError(
+                raise InputError(
                     f"{len(sites)} reactive sites > "
                     f"{spec['max_reactive_sites']}"
                 )
             _check_exclusions(mol, exclusions)
-        except chem.InputError as err:
+        except InputError as err:
             rejected.append({**record, "reason": str(err)})
             continue
         record.update(
@@ -167,7 +198,7 @@ def screen(
             sites=sites,
             classes=classes,
             notes=notes,
-            canonical_smiles=chem.canonical(mol),
+            canonical_smiles=identifiers.canonical(mol),
         )
         accepted.append(record)
     return accepted, rejected

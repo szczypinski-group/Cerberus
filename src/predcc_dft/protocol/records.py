@@ -13,13 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from predcc_dft import SCHEMA_VERSION
-from predcc_dft.io_utils import (
-    Config,
-    now,
-    pipeline_commit,
-    read_toml,
-    write_toml,
-)
+from predcc_dft.protocol.config import Config
+from predcc_dft.protocol.io import now, pipeline_commit, read_toml, write_toml
 
 
 def calc_id(
@@ -54,6 +49,12 @@ def single_point_status(
     return status, reason
 
 
+def submissions(task_dir: Path) -> int:
+    """How often `predcc run --submit` has submitted this task folder."""
+    f = task_dir / ".submissions"
+    return int(f.read_text(encoding="utf-8").strip() or 0) if f.exists() else 0
+
+
 def job_info(task_dir: Path) -> dict:
     """SLURM job ID, cores and wall time written by run.sh, if present."""
     f = task_dir / "job_info.toml"
@@ -86,8 +87,6 @@ def write(
             ),
         }
     if "attempt" not in calculation:
-        from predcc_dft.slurm import submissions
-
         calculation = {
             **calculation,
             "attempt": max(1, submissions(task_dir)),

@@ -10,8 +10,8 @@ from __future__ import annotations
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdDistGeom, rdMolTransforms
 
-from predcc_dft import chem
-from predcc_dft.io_utils import Config
+from predcc_dft.chemistry import geometry, identifiers
+from predcc_dft.protocol.config import Config
 
 
 def _params(
@@ -43,20 +43,7 @@ def _optimise(molh: Chem.Mol, force_field: str) -> str:
 def _stereo_ok(molh: Chem.Mol, expected_smiles: str) -> bool:
     check = Chem.Mol(molh)
     Chem.AssignStereochemistryFrom3D(check)
-    return chem.canonical(check) == expected_smiles
-
-
-def amide_rotamer_atoms(mol: Chem.Mol) -> tuple[int, int, int, int] | None:
-    """Atoms of the acylhydrazone O=C-N-N dihedral, if any."""
-    match = mol.GetSubstructMatch(
-        Chem.MolFromSmarts(chem.ACYLHYDRAZONE_DIHEDRAL_SMARTS)
-    )
-    return tuple(match[:4]) if match else None
-
-
-def rotamer_label(dihedral_deg: float) -> str:
-    """Return syn (|dihedral| < 90 deg) or anti."""
-    return "syn" if abs(dihedral_deg) < 90.0 else "anti"
+    return identifiers.canonical(check) == expected_smiles
 
 
 def embed(
@@ -64,7 +51,7 @@ def embed(
 ) -> tuple[Chem.Mol, dict]:
     """Embed one seed geometry. Returns (mol with Hs + conformer, metadata)."""
     ccfg = cfg["coordinates"]
-    expected = chem.canonical(mol)
+    expected = identifiers.canonical(mol)
     molh = Chem.AddHs(mol)
     seed0 = int(ccfg["random_seed"])
     for attempt in range(int(ccfg["max_embed_attempts"])):
@@ -74,7 +61,7 @@ def embed(
         if rdDistGeom.EmbedMolecule(trial, params) != 0:
             continue
         if rotamer is not None:
-            atoms = amide_rotamer_atoms(trial)
+            atoms = geometry.amide_rotamer_atoms(trial)
             if atoms is not None:
                 rdMolTransforms.SetDihedralDeg(
                     trial.GetConformer(),
@@ -92,12 +79,12 @@ def embed(
             "stereo_preserved": True,
         }
         if rotamer is not None:
-            atoms = amide_rotamer_atoms(trial)
+            atoms = geometry.amide_rotamer_atoms(trial)
             assert atoms is not None  # rotamer seeds are acylhydrazones only
             dih = rdMolTransforms.GetDihedralDeg(trial.GetConformer(), *atoms)
             meta.update(
                 rotamer_requested=rotamer,
-                rotamer_after_ff=rotamer_label(dih),
+                rotamer_after_ff=geometry.rotamer_label(dih),
                 amide_dihedral_deg=round(dih, 1),
             )
         return trial, meta

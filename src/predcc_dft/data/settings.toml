@@ -157,7 +157,7 @@ cpus = 8
 mem_per_cpu_mb = 3000
 time = "12:00:00"
 
-[slurm.stage.orca_input]        # one-off inputs from 'run_setup.py orca-input'
+[slurm.stage.orca_input]        # one-off inputs from 'predcc orca-input'
 cpus = 8
 mem_per_cpu_mb = 3000
 time = "24:00:00"

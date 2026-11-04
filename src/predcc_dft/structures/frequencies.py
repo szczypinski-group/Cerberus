@@ -14,9 +14,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from predcc_dft import SCHEMA_VERSION, conformers, orca, records
-from predcc_dft.io_utils import Config, format_xyz, now, read_toml, write_toml
-from predcc_dft.slurm import orca_run_script, write_array
+from predcc_dft import SCHEMA_VERSION
+from predcc_dft.backends import orca
+from predcc_dft.backends.slurm import orca_run_script, write_array
+from predcc_dft.protocol import constants, project, records
+from predcc_dft.protocol.config import Config
+from predcc_dft.protocol.io import format_xyz, now, read_toml, write_toml
+from predcc_dft.structures import conformers
 
 
 def _maxcore(cfg: Config, stage: str) -> int:
@@ -126,7 +130,7 @@ def write_jobs(cfg: Config, force: bool = False) -> dict:
     """Write Opt+Freq tasks (and retries) for every step-5 result."""
     f = cfg["frequencies"]
     tasks, waiting, retried, exhausted, no_conformers = [], 0, 0, 0, 0
-    for rec in conformers.molecules(cfg):
+    for rec in project.molecules(cfg):
         result = conformers.collect(cfg, rec)
         if result is None:
             waiting += 1
@@ -139,9 +143,10 @@ def write_jobs(cfg: Config, force: bool = False) -> dict:
         selected = [
             c
             for c in confs
-            if (c["gtot"] - g0) * orca.HARTREE_TO_KCAL <= f["window_kcal_mol"]
+            if (c["gtot"] - g0) * constants.HARTREE_TO_KCAL
+            <= f["window_kcal_mol"]
         ][: f["max_conformers"]]
-        fdir = conformers.mol_dir(cfg, rec) / "frequencies"
+        fdir = project.mol_dir(cfg, rec) / "frequencies"
         for conf in selected:
             cdir = fdir / conf["name"]
             label = f"{rec['compound']} {conf['name']}"
@@ -186,7 +191,7 @@ def write_jobs(cfg: Config, force: bool = False) -> dict:
                         "name": c["name"],
                         "seed": c["seed"],
                         "step5_rel_kcal_mol": round(
-                            (c["gtot"] - g0) * orca.HARTREE_TO_KCAL, 3
+                            (c["gtot"] - g0) * constants.HARTREE_TO_KCAL, 3
                         ),
                     }
                     for c in selected
@@ -206,7 +211,7 @@ def write_jobs(cfg: Config, force: bool = False) -> dict:
 
 def selected_results(cfg: Config, rec: dict, write: bool = True) -> list[dict]:
     """Latest attempt of every selected conformer: [{name, dir, record}]."""
-    fdir = conformers.mol_dir(cfg, rec) / "frequencies"
+    fdir = project.mol_dir(cfg, rec) / "frequencies"
     sel = fdir / "selection.toml"
     if not sel.exists():
         return []

@@ -13,8 +13,8 @@ from collections.abc import Iterator
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdCIPLabeler
 
-from predcc_dft import chem
-from predcc_dft.io_utils import Config
+from predcc_dft.chemistry import identifiers, smarts
+from predcc_dft.protocol.config import Config
 
 CN_C, CN_N = (
     1,
@@ -100,7 +100,7 @@ def _run_template(
     linkage: str, ald: Chem.Mol, nuc: Chem.Mol
 ) -> Iterator[tuple[Chem.Mol, int, int]]:
     """Yield (product, aldehyde site, nucleophile site) for one template."""
-    rxn = AllChem.ReactionFromSmarts(chem.REACTION_SMARTS[linkage])
+    rxn = AllChem.ReactionFromSmarts(smarts.REACTION_SMARTS[linkage])
     for prods in rxn.RunReactants((ald, nuc)):
         prod = Chem.RWMol(prods[0])
         ald_site = nuc_site = None
@@ -183,7 +183,7 @@ class ProductSet:
             "multi_site": len(ald["sites"]) > 1 or len(nuc["sites"]) > 1,
         }
         isomers = enumerate_ez(prod, self.enumerate)
-        ckey = chem.compound_key(chem.inchikey(isomers[0]))
+        ckey = identifiers.compound_key(identifiers.inchikey(isomers[0]))
         comp = self.compounds.get(ckey)
         if comp is None:
             comp = self.compounds[ckey] = {
@@ -191,7 +191,7 @@ class ProductSet:
                 "role": "imine",
                 "linkage": linkage,
                 "name": f"{ald['name']} + {nuc['name']} ({linkage})",
-                "smiles": chem.canonical(prod, isomeric=False),
+                "smiles": identifiers.canonical(prod, isomeric=False),
                 "origins": [],
                 "isomers": {},
             }
@@ -199,7 +199,7 @@ class ProductSet:
             comp["origins"].append(origin)
         for iso in isomers:
             iso = _canonical_order(iso)
-            smi = chem.canonical(iso)
+            smi = identifiers.canonical(iso)
             if smi in comp["isomers"]:
                 continue
             cn_c = next(
@@ -215,8 +215,8 @@ class ProductSet:
             comp["isomers"][smi] = {
                 "mol": iso,
                 "smiles": smi,
-                "inchikey": chem.inchikey(iso),
-                "inchi": chem.inchi(iso),
+                "inchikey": identifiers.inchikey(iso),
+                "inchi": identifiers.inchi(iso),
                 "stereo": _stereo_label(iso),
                 "cn_bond": [cn_c, cn_n],
             }
@@ -236,7 +236,7 @@ def generate(
     for ald in aldehydes:
         for nuc in nucleophiles:
             for cls in nuc["classes"]:
-                linkage = chem.CLASS_TO_LINKAGE[cls]
+                linkage = smarts.CLASS_TO_LINKAGE[cls]
                 if linkage not in allowed:
                     continue
                 for prod, a_site, n_site in _run_template(
@@ -247,7 +247,7 @@ def generate(
     # Azines: hydrazones with a free NH2 condense with a second aldehyde.
     if "azine" in allowed:
         hydrazone_patt = Chem.MolFromSmarts(
-            chem.NUCLEOPHILE_CLASSES["hydrazone"]
+            smarts.NUCLEOPHILE_CLASSES["hydrazone"]
         )
         hydrazones = []
         for comp in list(products.compounds.values()):
@@ -260,9 +260,9 @@ def generate(
                             "compound": comp["compound"],
                             "name": comp["name"],
                             "mol": iso["mol"],
-                            "sites": chem.match_sites(
+                            "sites": smarts.match_sites(
                                 iso["mol"],
-                                chem.NUCLEOPHILE_CLASSES["hydrazone"],
+                                smarts.NUCLEOPHILE_CLASSES["hydrazone"],
                             ),
                         }
                     )

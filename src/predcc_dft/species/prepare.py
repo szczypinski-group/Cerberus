@@ -16,22 +16,17 @@ import logging
 
 from rdkit import Chem
 
-from predcc_dft import (
-    SCHEMA_VERSION,
-    __version__,
-    chem,
-    compounds,
-    coordinates,
-    products,
-)
-from predcc_dft.io_utils import (
-    Config,
+from predcc_dft import SCHEMA_VERSION, __version__
+from predcc_dft.chemistry import geometry, identifiers, smarts
+from predcc_dft.protocol.config import Config
+from predcc_dft.protocol.io import (
     now,
     pipeline_commit,
     read_toml,
     write_text,
     write_toml,
 )
+from predcc_dft.species import coordinates, inputs, products
 
 log = logging.getLogger(__name__)
 
@@ -49,22 +44,22 @@ def _input_compound(entry: dict) -> dict:
     )
     new_index = {old: rank for old, rank in enumerate(ranks)}
     remap = lambda idxs: sorted(new_index[i] for i in idxs)  # noqa: E731
-    key = chem.inchikey(mol)
+    key = identifiers.inchikey(mol)
     record = {
-        "compound": chem.compound_key(key),
+        "compound": identifiers.compound_key(key),
         "role": entry["role"],
         "name": entry["name"],
         "source": entry["source"],
         "input_smiles": entry["smiles"],
-        "smiles": chem.canonical(mol),
+        "smiles": identifiers.canonical(mol),
         "notes": entry["notes"],
         "sites": remap(entry["sites"]),
         "isomers": {
-            chem.canonical(mol): {
+            identifiers.canonical(mol): {
                 "mol": mol,
-                "smiles": chem.canonical(mol),
+                "smiles": identifiers.canonical(mol),
                 "inchikey": key,
-                "inchi": chem.inchi(mol),
+                "inchi": identifiers.inchi(mol),
                 "stereo": products._stereo_label(mol),
             }
         },
@@ -72,16 +67,16 @@ def _input_compound(entry: dict) -> dict:
     if entry["role"] == "amine":
         record["classes"] = {c: remap(s) for c, s in entry["classes"].items()}
         record["linkages"] = sorted(
-            {chem.CLASS_TO_LINKAGE[c] for c in entry["classes"]}
+            {smarts.CLASS_TO_LINKAGE[c] for c in entry["classes"]}
         )
     return record
 
 
 def _water() -> dict:
-    mol = Chem.MolFromSmiles(chem.WATER_SMILES)
-    key = chem.inchikey(mol)
+    mol = Chem.MolFromSmiles(smarts.WATER_SMILES)
+    key = identifiers.inchikey(mol)
     return {
-        "compound": chem.compound_key(key),
+        "compound": identifiers.compound_key(key),
         "role": "water",
         "name": "water",
         "smiles": "O",
@@ -92,7 +87,7 @@ def _water() -> dict:
                 "mol": mol,
                 "smiles": "O",
                 "inchikey": key,
-                "inchi": chem.inchi(mol),
+                "inchi": identifiers.inchi(mol),
                 "stereo": "none",
             }
         },
@@ -103,7 +98,7 @@ def _seeds_for(comp: dict, iso: dict, cfg: Config) -> list[str | None]:
     if (
         comp.get("linkage") == "acylhydrazone"
         and cfg["products"].get("acylhydrazone_rotamers", True)
-        and coordinates.amide_rotamer_atoms(iso["mol"]) is not None
+        and geometry.amide_rotamer_atoms(iso["mol"]) is not None
     ):
         return ["syn", "anti"]
     return [None]
@@ -169,7 +164,7 @@ def _write_molecule(comp: dict, cfg: Config, force: bool) -> dict:
         "name": comp["name"],
         "smiles": comp["smiles"],
         "directory": mdir.relative_to(cfg.root).as_posix(),
-        **chem.properties(molh),
+        **identifiers.properties(molh),
         **{
             k: comp[k]
             for k in (
@@ -215,7 +210,7 @@ def _reactions(records: dict[str, dict], water_key: str, cfg: Config) -> dict:
         if rec["role"] != "imine":
             continue
         for org in rec["origins"]:
-            key, canon = chem.reaction_key(
+            key, canon = identifiers.reaction_key(
                 "CND",
                 [org["aldehyde"], org["amine"]],
                 [rec["compound"], water_key],
@@ -269,7 +264,9 @@ def _reactions(records: dict[str, dict], water_key: str, cfg: Config) -> dict:
                     if na == nb or pa == pb:
                         continue
                     # Direction: reactant condensate key sorts first.
-                    key, canon = chem.reaction_key("TRN", [pa, nb], [pb, na])
+                    key, canon = identifiers.reaction_key(
+                        "TRN", [pa, nb], [pb, na]
+                    )
                     exchanges.setdefault(
                         key,
                         {
@@ -343,8 +340,8 @@ def run(cfg: Config, force: bool = False) -> dict:
         ("aldehyde", "aldehydes"),
         ("amine", "amines"),
     ):
-        entries = compounds.read_list(cfg.path(cfg["inputs"][key]))
-        ok, bad = compounds.screen(entries, role, cfg)
+        entries = inputs.read_list(cfg.path(cfg["inputs"][key]))
+        ok, bad = inputs.screen(entries, role, cfg)
         accepted[role] = ok
         rejected += bad
     log.info(
@@ -355,7 +352,7 @@ def run(cfg: Config, force: bool = False) -> dict:
     )
 
     comps: dict[str, dict] = {}
-    inputs: dict[str, list[dict]] = {"aldehyde": [], "amine": []}
+    by_role: dict[str, list[dict]] = {"aldehyde": [], "amine": []}
     for role in ("aldehyde", "amine"):
         for entry in accepted[role]:
             rec = _input_compound(entry)
@@ -373,10 +370,10 @@ def run(cfg: Config, force: bool = False) -> dict:
                 continue
             comps[rec["compound"]] = rec
             first_iso = next(iter(rec["isomers"].values()))
-            inputs[role].append({**rec, "mol": first_iso["mol"]})
+            by_role[role].append({**rec, "mol": first_iso["mol"]})
 
     # Step 2: products via SMARTS (site-tagged, E/Z enumerated)
-    prod_set = products.generate(inputs["aldehyde"], inputs["amine"], cfg)
+    prod_set = products.generate(by_role["aldehyde"], by_role["amine"], cfg)
     for ckey, comp in prod_set.compounds.items():
         if (
             ckey in comps

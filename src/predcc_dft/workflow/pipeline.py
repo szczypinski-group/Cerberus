@@ -30,20 +30,15 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import IO
 
-from predcc_dft import (
-    analysis,
-    benchmark,
-    conformers,
-    dft_opt,
-    frequencies,
-    prepare,
-    records,
-    reference,
-    sanity,
-    slurm,
-    status,
-)
-from predcc_dft.io_utils import Config, read_toml, write_text, write_toml
+from predcc_dft import analysis
+from predcc_dft.backends import slurm
+from predcc_dft.energies import benchmark, reference
+from predcc_dft.protocol import records
+from predcc_dft.protocol.config import Config
+from predcc_dft.protocol.io import read_toml, write_text, write_toml
+from predcc_dft.species import prepare
+from predcc_dft.structures import conformers, dft_opt, frequencies, sanity
+from predcc_dft.workflow import status
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +82,7 @@ def _driver_script(cfg: Config, next_round: int, config: Path | None) -> Path:
         cmd += ["--level", level]
     for functional in cfg["benchmark"].get("functionals") or []:
         cmd += ["--functional", functional]
-    lines = slurm._header(  # noqa: SLF001 - shared SBATCH header
+    lines = slurm.header(  # noqa: SLF001 - shared SBATCH header
         cfg,
         "driver",
         "predcc_driver",

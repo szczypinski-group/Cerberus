@@ -1,4 +1,4 @@
-"""Method matrix: functionals x basis sets, grouped into levels of theory.
+"""methods.toml (SOP 2.5, 6): functionals x basis sets, levels, solvation.
 
 methods.toml may define, besides explicit ``[methods.<label>]`` tables,
 
@@ -154,3 +154,20 @@ def functional_methods(methods: dict, functional: str) -> list[str]:
             + ", ".join(methods.get("functionals", {}))
         )
     return labels
+
+
+def method_inputs(methods: dict, label: str) -> tuple[str, str]:
+    """ORCA keywords and % blocks of one method (common_* appended)."""
+    m = methods["methods"][label]
+    keywords = f"{m['orca_keywords']} {methods.get('common_keywords', '')}"
+    blocks = "\n".join(
+        b.strip()
+        for b in (m.get("orca_blocks", ""), methods.get("common_blocks", ""))
+        if b and b.strip()
+    )
+    return keywords.strip(), blocks
+
+
+def solvation_models(methods: dict) -> dict[str, dict]:
+    """[solvation.<label>] tables of methods.toml."""
+    return dict(methods.get("solvation", {}))

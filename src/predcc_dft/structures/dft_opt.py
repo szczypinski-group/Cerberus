@@ -14,21 +14,24 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from predcc_dft import SCHEMA_VERSION, conformers, orca
-from predcc_dft.io_utils import (
-    Config,
+from predcc_dft import SCHEMA_VERSION
+from predcc_dft.backends import orca
+from predcc_dft.backends.slurm import orca_run_script, write_array
+from predcc_dft.protocol import constants, project
+from predcc_dft.protocol.config import Config
+from predcc_dft.protocol.io import (
     format_xyz,
     now,
     read_toml,
     read_xyz_frames,
     write_toml,
 )
-from predcc_dft.slurm import orca_run_script, write_array
+from predcc_dft.structures import conformers
 
 
 def _pooled(cfg: Config, rec: dict) -> list[dict]:
     """Pooled CREST frames in seed order: [{name, atoms, xtb_energy, seed}]."""
-    cdir = conformers.mol_dir(cfg, rec) / "conformers"
+    cdir = project.mol_dir(cfg, rec) / "conformers"
     frames, n = [], 1
     for label in [s["label"] for iso in rec["isomers"] for s in iso["seeds"]]:
         f = cdir / f"crest_{label}" / "crest_conformers.xyz"
@@ -59,7 +62,7 @@ def _selection(cfg: Config, rec: dict) -> list[dict]:
             f
             for f in frames
             if f["xtb_energy"] is None
-            or (f["xtb_energy"] - e0) * orca.HARTREE_TO_KCAL
+            or (f["xtb_energy"] - e0) * constants.HARTREE_TO_KCAL
             <= d["window_kcal_mol"]
         ]
         frames.sort(
@@ -69,14 +72,14 @@ def _selection(cfg: Config, rec: dict) -> list[dict]:
 
 
 def _dir(cfg: Config, rec: dict) -> Path:
-    return conformers.mol_dir(cfg, rec) / "conformers" / "dft"
+    return project.mol_dir(cfg, rec) / "conformers" / "dft"
 
 
 def write_jobs(cfg: Config, force: bool = False) -> dict:
     """Write ORCA optimisations of the selected CREST conformers."""
     d, st = cfg["dft_opt"], cfg["slurm"]["stage"]["dft_opt"]
     tasks, waiting = [], 0
-    for rec in conformers.molecules(cfg):
+    for rec in project.molecules(cfg):
         if not conformers.crest_done(cfg, rec):
             waiting += 1
             continue
@@ -170,6 +173,6 @@ def collect(cfg: Config, rec: dict) -> dict | None:
         "conformers": [
             c
             for c in confs
-            if (c["gtot"] - e0) * orca.HARTREE_TO_KCAL <= window
+            if (c["gtot"] - e0) * constants.HARTREE_TO_KCAL <= window
         ]
     }

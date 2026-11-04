@@ -1,4 +1,4 @@
-"""Steps 8 and 10: reference and solvation single points on best geometries.
+"""SOP 5.1 step 8: DLPNO-CCSD(T)/CBS reference on each best geometry.
 
 Per molecule (molecules/<key>/reference/):
   ref_x, ref_y      DLPNO-CCSD(T) with cardinal numbers X, Y (gas phase);
@@ -17,49 +17,23 @@ from __future__ import annotations
 
 import math
 
-from predcc_dft import SCHEMA_VERSION, conformers, orca, records
-from predcc_dft.io_utils import (
-    Config,
-    now,
-    pipeline_commit,
-    read_toml,
-    write_toml,
-)
-from predcc_dft.slurm import orca_run_script, write_array
-
-R_KCAL = 1.98720425864083e-3  # kcal/(mol K)
-REFERENCE_LABEL = "dlpno_ccsdt_cbs"
-
-
-def structure(cfg: Config, rec: dict) -> dict | None:
-    """structure.toml of a collapsed molecule (step 7), else None."""
-    path = conformers.mol_dir(cfg, rec) / "structure.toml"
-    if not path.exists():
-        return None
-    data = read_toml(path)
-    return data if data.get("status") == "collapsed" else None
-
-
-def solvation_models(cfg: Config) -> dict[str, dict]:
-    """[solvation.<label>] tables of methods.toml."""
-    return dict(cfg.methods.get("solvation", {}))
+from predcc_dft import SCHEMA_VERSION
+from predcc_dft.backends import orca
+from predcc_dft.backends.slurm import orca_run_script, write_array
+from predcc_dft.energies import solvation
+from predcc_dft.protocol import constants, methods, project, records
+from predcc_dft.protocol.config import Config
+from predcc_dft.protocol.io import now, pipeline_commit, write_toml
 
 
 def job_inputs(cfg: Config) -> dict[str, tuple[str, str]]:
-    """Task name -> (keywords, blocks) for every reference/solvation job."""
+    """Task name -> (keywords, blocks): DLPNO reference + solvation jobs."""
     r = cfg["reference"]
-    jobs = {
+    return {
         "ref_x": (r["keywords_x"], ""),
         "ref_y": (r["keywords_y"], ""),
-        "solv_gas": (r["solvation_keywords"], ""),
+        **solvation.job_inputs(cfg),
     }
-    for label, model in solvation_models(cfg).items():
-        jobs[f"solv_{label}"] = (
-            f"{r['solvation_keywords']} "
-            f"{model.get('orca_keywords', '')}".strip(),
-            model.get("orca_blocks", ""),
-        )
-    return jobs
 
 
 def _calculation(cfg: Config, rec: dict, job: str) -> dict:
@@ -88,11 +62,11 @@ def write_jobs(cfg: Config, force: bool = False) -> dict:
     """Write ORCA inputs for every unfinished reference/solvation job."""
     st = cfg["slurm"]["stage"]["reference"]
     tasks, waiting = [], 0
-    for rec in conformers.molecules(cfg):
-        if structure(cfg, rec) is None:
+    for rec in project.molecules(cfg):
+        if project.structure(cfg, rec) is None:
             waiting += 1
             continue
-        mdir = conformers.mol_dir(cfg, rec)
+        mdir = project.mol_dir(cfg, rec)
         geometry = (mdir / "best.xyz").read_text(encoding="utf-8")
         for job, (keywords, blocks) in job_inputs(cfg).items():
             jdir = mdir / "reference" / job
@@ -140,20 +114,9 @@ def cbs(
 
 def standard_state_kcal(temperature: float) -> float:
     """1 atm -> 1 mol/L: RT ln(RT/p) with RT/p in L/mol."""
-    return R_KCAL * temperature * math.log(0.0820573661 * temperature)
-
-
-def _dg_solv(cfg: Config, label: str, res: dict) -> float | None:
-    """dG_solv (kcal/mol) of one model, from its job and the gas job."""
-    model = solvation_models(cfg)[label]
-    if model.get("parse") == "cosmors":
-        val = res[f"solv_{label}"].get("dg_solv_cosmors")
-        return None if val is None else val * orca.HARTREE_TO_KCAL
-    e_solv = res[f"solv_{label}"].get("final_energy")
-    e_gas = res["solv_gas"].get("final_energy")
-    if e_solv is None or e_gas is None:
-        return None
-    return (e_solv - e_gas) * orca.HARTREE_TO_KCAL
+    return (
+        constants.R_KCAL * temperature * math.log(0.0820573661 * temperature)
+    )
 
 
 def collect(cfg: Config) -> dict:
@@ -161,12 +124,12 @@ def collect(cfg: Config) -> dict:
     r = cfg["reference"]
     temp = r["temperature_k"]
     n_done, missing = 0, []
-    for rec in conformers.molecules(cfg):
-        struct = structure(cfg, rec)
+    for rec in project.molecules(cfg):
+        struct = project.structure(cfg, rec)
         if struct is None:
             missing.append(rec["compound"])
             continue
-        mdir = conformers.mol_dir(cfg, rec)
+        mdir = project.mol_dir(cfg, rec)
         geometry = (mdir / "best.xyz").read_text(encoding="utf-8")
         res, state = {}, {}
         for job in job_inputs(cfg):
@@ -189,12 +152,12 @@ def collect(cfg: Config) -> dict:
             if status != "completed":
                 res[job] = {}  # never use failed or stale numbers
         ref_ok = all(state[j] == "completed" for j in ("ref_x", "ref_y"))
-        solvation = {}
-        for label in solvation_models(cfg):
-            dg = _dg_solv(cfg, label, res)
+        solv_data = {}
+        for label in methods.solvation_models(cfg.methods):
+            dg = solvation.dg_solv(cfg, label, res)
             if dg is not None:
-                solvation[label] = {"dg_solv_kcal_mol": dg}
-        if not ref_ok and not solvation:
+                solv_data[label] = {"dg_solv_kcal_mol": dg}
+        if not ref_ok and not solv_data:
             missing.append(rec["compound"])
             continue
         data = {
@@ -224,7 +187,7 @@ def collect(cfg: Config) -> dict:
             "solvation": {
                 "level": r["solvation_keywords"],
                 "e_gas_hartree": res["solv_gas"].get("final_energy"),
-                **solvation,
+                **solv_data,
             },
         }
         if ref_ok:
@@ -236,7 +199,7 @@ def collect(cfg: Config) -> dict:
             ]
             scf_cbs, corr_cbs = cbs(cfg, *needed)
             data["reference"] = {
-                "label": REFERENCE_LABEL,
+                "label": constants.REFERENCE_LABEL,
                 "scf_x_hartree": needed[0],
                 "corr_x_hartree": needed[1],
                 "scf_y_hartree": needed[2],
@@ -250,9 +213,3 @@ def collect(cfg: Config) -> dict:
         write_toml(mdir / "reference" / "reference.toml", data)
         n_done += ref_ok
     return {"species_with_reference": n_done, "incomplete": len(missing)}
-
-
-def species_data(cfg: Config, rec: dict) -> dict | None:
-    """reference.toml of one molecule, if collected."""
-    path = conformers.mol_dir(cfg, rec) / "reference" / "reference.toml"
-    return read_toml(path) if path.exists() else None

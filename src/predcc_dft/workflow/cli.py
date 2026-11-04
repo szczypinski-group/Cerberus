@@ -24,7 +24,9 @@ import sys
 from pathlib import Path
 
 from predcc_dft import __version__
-from predcc_dft.io_utils import DATA_DIR, Config, load_config, write_text
+from predcc_dft.protocol import methods
+from predcc_dft.protocol.config import DATA_DIR, Config, load_config
+from predcc_dft.protocol.io import write_text
 
 STARTER_SETTINGS = """\
 # Project settings: merged over the packaged defaults
@@ -133,10 +135,8 @@ def cmd_init(root: Path, example: bool) -> int:
 
 def _print_levels(cfg: Config) -> None:
     """Print every level with its methods and ORCA keyword lines."""
-    from predcc_dft import method_matrix
-
     table = cfg.methods.get("methods", {})
-    levels = method_matrix.all_levels(cfg.methods)
+    levels = methods.all_levels(cfg.methods)
     for name, labels in levels.items():
         print(f"{name}  ({len(labels)} methods)")
         for label in labels:
@@ -145,7 +145,7 @@ def _print_levels(cfg: Config) -> None:
     for f in cfg.methods.get("functionals", {}):
         bases = [
             table[m]["basis_label"]
-            for m in method_matrix.functional_methods(cfg.methods, f)
+            for m in methods.functional_methods(cfg.methods, f)
         ]
         print(f"    {f:<20s} {', '.join(bases)}")
     print("\nrun:  predcc level <level> --submit")
@@ -292,19 +292,10 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911, PLR0912
 
     cfg = load_config(args.config, args.root)
     # Imported here so `predcc init` and --help work without RDKit.
-    from predcc_dft import (
-        benchmark,
-        conformers,
-        dft_opt,
-        frequencies,
-        method_matrix,
-        orca_inputs,
-        pipeline,
-        prepare,
-        reference,
-        sanity,
-        status,
-    )
+    from predcc_dft.energies import benchmark, reference
+    from predcc_dft.species import prepare
+    from predcc_dft.structures import conformers, dft_opt, frequencies, sanity
+    from predcc_dft.workflow import orca_inputs, pipeline, status
 
     cmd = args.command
     if cmd == "levels":
@@ -315,9 +306,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911, PLR0912
         functionals = list(getattr(args, "functional", []) or [])
         try:  # fail early on a typo
             for name in levels:
-                method_matrix.level_methods(cfg.methods, name)
+                methods.level_methods(cfg.methods, name)
             for name in functionals:
-                method_matrix.functional_methods(cfg.methods, name)
+                methods.functional_methods(cfg.methods, name)
         except KeyError as err:
             print(err.args[0])
             return 2

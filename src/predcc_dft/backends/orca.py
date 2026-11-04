@@ -5,8 +5,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-HARTREE_TO_KCAL = 627.509474
-
 _FLOAT = r"(-?\d+\.\d+(?:[eE][-+]?\d+)?)"
 _PATTERNS = {
     "final_energy": re.compile(rf"FINAL SINGLE POINT ENERGY\s+{_FLOAT}"),

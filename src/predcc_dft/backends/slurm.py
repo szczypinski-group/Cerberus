@@ -16,7 +16,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from predcc_dft.io_utils import Config, read_toml, write_text, write_toml
+from predcc_dft.protocol import records
+from predcc_dft.protocol.config import Config
+from predcc_dft.protocol.io import now, read_toml, write_text, write_toml
 
 log = logging.getLogger(__name__)
 
@@ -75,7 +77,7 @@ MPI_STAGES = {
 }
 
 
-def _header(
+def header(
     cfg: Config,
     stage: str,
     job_name: str,
@@ -116,7 +118,7 @@ def _header(
 def write_single(cfg: Config, stage: str, task_dir: Path, label: str) -> Path:
     """Standalone batch file for one task: sbatch <task_dir>/job.slurm."""
     name = f"{stage}_{label}".replace(" ", "_")[:60]
-    lines = _header(cfg, stage, name, f"{task_dir}/slurm-%j.out")
+    lines = header(cfg, stage, name, f"{task_dir}/slurm-%j.out")
     lines += [
         "",
         f'cd "{task_dir}"',
@@ -129,12 +131,6 @@ def write_single(cfg: Config, stage: str, task_dir: Path, label: str) -> Path:
     return script
 
 
-def submissions(task_dir: Path) -> int:
-    """How often `predcc run --submit` has submitted this task folder."""
-    f = task_dir / ".submissions"
-    return int(f.read_text(encoding="utf-8").strip() or 0) if f.exists() else 0
-
-
 def write_array(cfg: Config, stage: str, task_dirs: list[Path]) -> Path | None:
     """Write jobs/<stage>/manifest.txt and jobs/<stage>/<stage>.slurm.
 
@@ -144,8 +140,8 @@ def write_array(cfg: Config, stage: str, task_dirs: list[Path]) -> Path | None:
     stage_dir = cfg.jobs_dir / stage
     (stage_dir / "logs").mkdir(parents=True, exist_ok=True)
     limit = int(cfg["pipeline"]["max_submissions"])
-    given_up = [d for d in task_dirs if submissions(d) >= limit]
-    task_dirs = [d for d in task_dirs if submissions(d) < limit]
+    given_up = [d for d in task_dirs if records.submissions(d) >= limit]
+    task_dirs = [d for d in task_dirs if records.submissions(d) < limit]
     (stage_dir / "given_up.txt").write_text(
         "".join(f"{d.relative_to(cfg.root).as_posix()}\n" for d in given_up),
         encoding="utf-8",
@@ -164,7 +160,7 @@ def write_array(cfg: Config, stage: str, task_dirs: list[Path]) -> Path | None:
         write_single(cfg, stage, d, r.replace("/", "_"))
 
     array = f"1-{len(task_dirs)}%{cfg['slurm']['array_limit']}"
-    lines = _header(cfg, stage, stage, f"{stage_dir}/logs/%A_%a.out", array)
+    lines = header(cfg, stage, stage, f"{stage_dir}/logs/%A_%a.out", array)
     lines += ["", f'cd "{cfg.root}"', "TASKS=("]
     lines += [f'  "{r}"' for r in rel]
     lines += [
@@ -238,8 +234,6 @@ def record_submission(
     cfg: Config, stage: str, job_id: str, task_dirs: list[Path]
 ) -> None:
     """Remember the stage's job ID and count each task's submissions."""
-    from predcc_dft.io_utils import now
-
     path = _ledger(cfg)
     data = read_toml(path) if path.exists() else {}
     data.setdefault("stage", {})[stage] = {
@@ -250,7 +244,7 @@ def record_submission(
     write_toml(path, data)
     for d in task_dirs:
         (d / ".submissions").write_text(
-            f"{submissions(d) + 1}\n", encoding="utf-8"
+            f"{records.submissions(d) + 1}\n", encoding="utf-8"
         )
 
 

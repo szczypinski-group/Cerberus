@@ -20,25 +20,19 @@ from rdkit import Chem
 from rdkit.Chem import rdDetermineBonds, rdMolTransforms
 from rdkit.Geometry import Point3D
 
-from predcc_dft import (
-    SCHEMA_VERSION,
-    chem,
-    conformers,
-    coordinates,
-    frequencies,
-    orca,
-)
-from predcc_dft.io_utils import (
+from predcc_dft import SCHEMA_VERSION
+from predcc_dft.chemistry import geometry, identifiers
+from predcc_dft.protocol import constants, project
+from predcc_dft.protocol.config import Config
+from predcc_dft.protocol.io import (
     Atoms,
-    Config,
     format_xyz,
     now,
     read_xyz_frames,
     write_text,
     write_toml,
 )
-
-KB_HARTREE = 3.166811563e-6  # Boltzmann constant in Eh/K
+from predcc_dft.structures import frequencies
 
 
 def _reference(cfg: Config, rec: dict) -> Chem.Mol:
@@ -83,7 +77,7 @@ def check_geometry(
     for i, (_, x, y, z) in enumerate(atoms):
         conf.SetAtomPosition(i, Point3D(x, y, z))
     Chem.AssignStereochemistryFrom3D(mol)
-    smiles = chem.canonical(mol)
+    smiles = identifiers.canonical(mol)
     match = next(
         (iso for iso in rec["isomers"] if iso["smiles"] == smiles), None
     )
@@ -100,11 +94,11 @@ def check_geometry(
         "smiles": smiles,
         "rotamer": "",
     }
-    rot_atoms = coordinates.amide_rotamer_atoms(mol)
+    rot_atoms = geometry.amide_rotamer_atoms(mol)
     if rec.get("linkage") == "acylhydrazone" and rot_atoms is not None:
         dih = rdMolTransforms.GetDihedralDeg(conf, *rot_atoms)
         out.update(
-            rotamer=coordinates.rotamer_label(dih),
+            rotamer=geometry.rotamer_label(dih),
             amide_dihedral_deg=round(dih, 1),
         )
     out["label"] = out["stereo"] + (
@@ -122,7 +116,7 @@ def run(cfg: Config) -> dict:
         "no_valid_conformer": 0,
         "still_running": 0,
     }
-    for rec in conformers.molecules(cfg):
+    for rec in project.molecules(cfg):
         results = frequencies.selected_results(cfg, rec)
         if not results:
             summary["waiting"] += 1
@@ -175,7 +169,7 @@ def run(cfg: Config) -> dict:
             for r in rows
             if r.get("sanity") == "passed" and r.get("g_hartree") is not None
         ]
-        mdir = conformers.mol_dir(cfg, rec)
+        mdir = project.mol_dir(cfg, rec)
         out = {
             "schema_version": SCHEMA_VERSION,
             "generated": now(),
@@ -190,7 +184,7 @@ def run(cfg: Config) -> dict:
             g0 = min(r["g_hartree"] for r in passed)
             weights = {
                 r["conformer"]: math.exp(
-                    -(r["g_hartree"] - g0) / (KB_HARTREE * temp)
+                    -(r["g_hartree"] - g0) / (constants.KB_HARTREE * temp)
                 )
                 for r in passed
             }
@@ -198,7 +192,7 @@ def run(cfg: Config) -> dict:
             populations: dict[str, float] = {}
             for r in passed:
                 r["rel_g_kcal_mol"] = round(
-                    (r["g_hartree"] - g0) * orca.HARTREE_TO_KCAL, 3
+                    (r["g_hartree"] - g0) * constants.HARTREE_TO_KCAL, 3
                 )
                 r["population"] = round(weights[r["conformer"]] / total, 4)
                 populations[r["label"]] = round(
@@ -209,7 +203,10 @@ def run(cfg: Config) -> dict:
             # conformers, E/Z isomers and rotamers, relative to the best one:
             # G_ens - G_best = -RT ln(sum_i exp(-(G_i - G_best)/RT)) <= 0.
             ensemble_kcal = (
-                -KB_HARTREE * temp * math.log(total) * orca.HARTREE_TO_KCAL
+                -constants.KB_HARTREE
+                * temp
+                * math.log(total)
+                * constants.HARTREE_TO_KCAL
             )
             write_text(
                 mdir / "best.xyz",

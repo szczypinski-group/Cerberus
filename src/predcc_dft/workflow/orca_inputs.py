@@ -13,9 +13,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from predcc_dft import benchmark, orca, reference
-from predcc_dft.io_utils import Config, format_xyz, read_toml, read_xyz_frames
-from predcc_dft.slurm import orca_run_script, write_single
+from predcc_dft.backends import orca
+from predcc_dft.backends.slurm import orca_run_script, write_single
+from predcc_dft.energies import reference
+from predcc_dft.protocol import methods
+from predcc_dft.protocol.config import Config
+from predcc_dft.protocol.io import format_xyz, read_toml, read_xyz_frames
 
 FIXED_STEPS = {
     "dft_opt": ("dft_opt", "step 5 ORCA route: r2SCAN-3c/CPCM optimisation"),
@@ -57,7 +60,7 @@ def keywords_for(
     elif step in ref_jobs:
         kw, bl = ref_jobs[step]
     elif step.startswith("sp_") and step[3:] in cfg.methods.get("methods", {}):
-        kw, bl = benchmark.inputs_for(cfg, step[3:])
+        kw, bl = methods.method_inputs(cfg.methods, step[3:])
     elif step == "custom":
         if not keywords:
             raise ValueError("--step custom needs --keywords")

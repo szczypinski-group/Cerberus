@@ -14,39 +14,19 @@ Output per molecule: molecules/<key>/conformers/
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from predcc_dft import SCHEMA_VERSION
-from predcc_dft.io_utils import (
-    Config,
-    now,
-    read_toml,
-    read_xyz_frames,
-    write_text,
-    write_toml,
-)
-from predcc_dft.slurm import write_array
+from predcc_dft.backends.slurm import write_array
+from predcc_dft.protocol import project
+from predcc_dft.protocol.config import Config
+from predcc_dft.protocol.io import now, read_xyz_frames, write_text, write_toml
 
 CENSO_RESULT = "2_OPTIMIZATION"
 
 
-def molecules(cfg: Config) -> list[dict]:
-    """All molecule records from molecules.toml, in a stable order."""
-    data = read_toml(cfg.molecules_file)
-    out = []
-    for role in ("aldehyde", "amine", "imine", "water"):
-        out += data.get(role, [])
-    return out
-
-
-def mol_dir(cfg: Config, rec: dict) -> Path:
-    """Folder of one molecule."""
-    return cfg.root / rec["directory"]
-
-
 def censo_done(cfg: Config, rec: dict) -> bool:
     """True once CENSO wrote its optimisation results."""
-    d = mol_dir(cfg, rec) / "conformers" / "censo"
+    d = project.mol_dir(cfg, rec) / "conformers" / "censo"
     return (d / f"{CENSO_RESULT}.json").exists() and (
         d / f"{CENSO_RESULT}.xyz"
     ).exists()
@@ -116,7 +96,7 @@ def engine(cfg: Config) -> str:
 
 def crest_done(cfg: Config, rec: dict) -> bool:
     """True once CREST finished for every seed."""
-    cdir = mol_dir(cfg, rec) / "conformers"
+    cdir = project.mol_dir(cfg, rec) / "conformers"
     labels = [s["label"] for iso in rec["isomers"] for s in iso["seeds"]]
     return (cdir / "DONE").exists() and all(
         (cdir / f"crest_{label}" / "crest_conformers.xyz").exists()
@@ -128,7 +108,7 @@ def step5_done(cfg: Config, rec: dict) -> bool:
     """True once step 5 finished with the configured engine."""
     if engine(cfg) == "censo":
         return censo_done(cfg, rec)
-    from predcc_dft import dft_opt  # local import: dft_opt imports this module
+    from predcc_dft.structures import dft_opt  # dft_opt imports this module
 
     return dft_opt.all_done(cfg, rec)
 
@@ -136,7 +116,7 @@ def step5_done(cfg: Config, rec: dict) -> bool:
 def write_jobs(cfg: Config, force: bool = False) -> dict:
     """Write the CREST (+ CENSO) task of every unfinished molecule."""
     tasks = []
-    for rec in molecules(cfg):
+    for rec in project.molecules(cfg):
         done = (
             censo_done(cfg, rec)
             if engine(cfg) == "censo"
@@ -145,9 +125,9 @@ def write_jobs(cfg: Config, force: bool = False) -> dict:
         if done and not force:
             continue
         labels = [s["label"] for iso in rec["isomers"] for s in iso["seeds"]]
-        seed_xyz = mol_dir(cfg, rec) / "seeds" / f"{labels[0]}.xyz"
+        seed_xyz = project.mol_dir(cfg, rec) / "seeds" / f"{labels[0]}.xyz"
         n_atoms = len(read_xyz_frames(seed_xyz)[0][1])
-        cdir = mol_dir(cfg, rec) / "conformers"
+        cdir = project.mol_dir(cfg, rec) / "conformers"
         write_text(
             cdir / "run.sh",
             _run_script(cfg, rec, labels, n_atoms),
@@ -164,7 +144,7 @@ def write_jobs(cfg: Config, force: bool = False) -> dict:
 
 def seed_index(cfg: Config, rec: dict) -> dict[int, str]:
     """Pooled-ensemble frame number (1-based, CONF<n>) -> seed label."""
-    cdir = mol_dir(cfg, rec) / "conformers"
+    cdir = project.mol_dir(cfg, rec) / "conformers"
     seed_of: dict[int, str] = {}
     i = 1
     for label in [s["label"] for iso in rec["isomers"] for s in iso["seeds"]]:
@@ -183,10 +163,10 @@ def collect(cfg: Config, rec: dict) -> dict | None:
     gtot is CENSO's G (censo engine) or the ORCA optimised energy (orca).
     """
     if engine(cfg) == "orca":
-        from predcc_dft import dft_opt
+        from predcc_dft.structures import dft_opt
 
         return dft_opt.collect(cfg, rec)
-    cdir = mol_dir(cfg, rec) / "conformers"
+    cdir = project.mol_dir(cfg, rec) / "conformers"
     if not censo_done(cfg, rec):
         return None
     data = json.loads(

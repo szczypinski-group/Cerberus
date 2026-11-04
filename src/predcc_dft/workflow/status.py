@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import csv
 
-from predcc_dft import benchmark, conformers, frequencies
-from predcc_dft.io_utils import Config, read_toml
+from predcc_dft.energies import benchmark
+from predcc_dft.protocol import project
+from predcc_dft.protocol.config import Config
+from predcc_dft.protocol.io import read_toml
+from predcc_dft.structures import conformers, frequencies
 
 COLUMNS = [
     "compound",
@@ -22,7 +25,7 @@ COLUMNS = [
 
 
 def _step5(cfg: Config, rec: dict) -> str:
-    cdir = conformers.mol_dir(cfg, rec) / "conformers"
+    cdir = project.mol_dir(cfg, rec) / "conformers"
     if conformers.step5_done(cfg, rec):
         return "done"
     if (cdir / "FAILED").exists():
@@ -40,8 +43,8 @@ def run(cfg: Config) -> list[dict]:
         return []
     n_methods = len(benchmark.methods(cfg))
     rows = []
-    for rec in conformers.molecules(cfg):
-        mdir = conformers.mol_dir(cfg, rec)
+    for rec in project.molecules(cfg):
+        mdir = project.mol_dir(cfg, rec)
         counts: dict[str, int] = {}
         for r in frequencies.selected_results(cfg, rec, write=False):
             s = r["record"]["calculation"]["status"]
@@ -65,7 +68,7 @@ def run(cfg: Config) -> list[dict]:
                 "best": struct.get("best", {}).get("label", ""),
                 "reference": "done" if "reference" in ref_data else "-",
                 "benchmark": (
-                    f"{len(benchmark.energies(cfg, rec))}/{n_methods}"
+                    f"{len(project.benchmark_energies(cfg, rec))}/{n_methods}"
                 ),
             }
         )
