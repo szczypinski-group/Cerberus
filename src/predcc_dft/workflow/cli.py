@@ -9,6 +9,7 @@ A study is one folder: a shared trunk (inputs -> best.xyz) and two branches.
         --functional pwpb95d4       ... only that functional, all basis sets
     predcc promote                  benchmark candidate -> production lock
     predcc production --submit      trunk + production (locked method)
+    predcc ts --submit              trunk + TS module (barriers, kinetics)
 
 Every chain repeats itself on SLURM until nothing is left. Individual stages
 stay available for debugging and pilots (prepare, conformers, dft-opt,
@@ -97,7 +98,7 @@ def _print(summary: dict, indent: str = "  ") -> None:
 
 
 def cmd_init(root: Path, example: bool) -> int:
-    """Create a study: config/, inputs/, benchmark/, production/."""
+    """Create a study: config/, inputs/, benchmark/, production/, ts/."""
     root.mkdir(parents=True, exist_ok=True)
     cdir = root / "config"
     made = []
@@ -129,6 +130,10 @@ def cmd_init(root: Path, example: bool) -> int:
         root / "production" / "experimental" / "_example.toml": (
             EXPERIMENTAL_EXAMPLE
         ),
+        root / "ts" / "molecules.txt": SELECTION_TEMPLATE.format(
+            branch="TS module"
+        )
+        + "# Every selected imine gets 2 steps x every [ts] shuttle TSs.\n",
     }
     for name in ("aldehydes.txt", "amines.txt"):
         src = DATA_DIR / "examples" / name
@@ -156,6 +161,7 @@ def cmd_init(root: Path, example: bool) -> int:
     print(
         "      predcc production --submit  # the locked method, any molecules"
     )
+    print("      predcc ts --submit          # TS, rates and kinetics")
     return 0
 
 
@@ -243,7 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "init",
-        help="create a study: config/, inputs/, benchmark/, production/",
+        help="create a study: config/, inputs/, benchmark/, production/, ts/",
     )
     p.add_argument("directory", nargs="?", type=Path)
     p.add_argument(
@@ -256,6 +262,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("run", "trunk only: inputs -> best.xyz for every molecule"),
         ("benchmark", "trunk + benchmark branch (method grid vs DLPNO)"),
         ("production", "trunk + production branch (the locked method)"),
+        ("ts", "trunk + TS module: transition states, rates, kinetics"),
     ):
         p = sub.add_parser(name, help=hlp)
         p.add_argument(
@@ -325,6 +332,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub.add_parser("levels", help="list levels, functionals and their methods")
 
+    p = sub.add_parser(
+        "show",
+        help="print a molecule's index/<key>.toml (every module's files)",
+    )
+    p.add_argument(
+        "molecule", help="name, SMILES, compound key, InChIKey or TS label"
+    )
+
     p = sub.add_parser("status", help="progress of every molecule")
     p.add_argument("--summary", action="store_true", help="counts only")
     sub.add_parser("cancel", help="scancel this project's queued jobs")
@@ -346,7 +361,7 @@ def build_parser() -> argparse.ArgumentParser:
         "chain",
         nargs="?",
         default="all",
-        choices=["all", "trunk", "benchmark", "production"],
+        choices=["all", "trunk", "benchmark", "production", "ts"],
     )
 
     p = sub.add_parser(
@@ -407,8 +422,8 @@ def _dispatch(cfg: Config, args: argparse.Namespace) -> int:  # noqa: C901, PLR0
         return cmd_promote(
             cfg, args.method, args.solvation, args.version, args.force
         )
-    if cmd in ("run", "benchmark", "production", "level", "functional"):
-        chain = {"run": "trunk", "production": "production"}.get(
+    if cmd in ("run", "benchmark", "production", "ts", "level", "functional"):
+        chain = {"run": "trunk", "production": "production", "ts": "ts"}.get(
             cmd, "benchmark"
         )
         levels = list(getattr(args, "level", []) or [])
@@ -492,7 +507,7 @@ def _dispatch(cfg: Config, args: argparse.Namespace) -> int:  # noqa: C901, PLR0
         return 0
     if cmd == "analyse":
         chains = (
-            ["trunk", "benchmark", "production"]
+            ["trunk", "benchmark", "production", "ts"]
             if args.chain == "all"
             else [args.chain]
         )
@@ -500,10 +515,24 @@ def _dispatch(cfg: Config, args: argparse.Namespace) -> int:  # noqa: C901, PLR0
             if (
                 chain == "production"
                 and not (cfg.production_dir / "production.toml").exists()
-            ):
+            ) or (chain == "ts" and not cfg.ts_dir.exists()):
                 continue
             print(f"{chain}:")
             _print(pipeline.local_steps(cfg, chain), "    ")
+        from predcc_dft.workflow import index
+
+        print(f"index/<molecule>.toml files: {index.run(cfg)}")
+        return 0
+    if cmd == "show":
+        from predcc_dft.workflow import index
+
+        hits = index.find(cfg, args.molecule)
+        if not hits:
+            print(f"no molecule matches {args.molecule!r}")
+            return 1
+        for p in hits:
+            print(f"# {p.relative_to(cfg.root).as_posix()}")
+            print(p.read_text(encoding="utf-8"))
         return 0
     return 1
 

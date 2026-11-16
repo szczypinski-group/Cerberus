@@ -7,6 +7,7 @@ A study folder (any folder, default: the current one) holds
     molecules/ jobs/ derived/ the shared trunk (steps 1-7)
     benchmark/                branch: methods.toml, molecules.txt, results
     production/               branch: production.toml (the lock), results
+    ts/                       TS module: transition states and kinetics
 """
 
 from __future__ import annotations
@@ -79,11 +80,17 @@ class Config(dict):
         """Production branch: one locked method for many molecules."""
         return self.path(self["project"].get("production_dir", "production"))
 
+    @property
+    def ts_dir(self) -> Path:
+        """TS module: transition states, rates and kinetics (SOP 10)."""
+        return self.path(self["project"].get("ts_dir", "ts"))
+
     def branch_dir(self, branch: str) -> Path:
-        """Root folder of a branch ("benchmark" or "production")."""
+        """Root folder of a branch: benchmark, production or ts."""
         return {
             "benchmark": self.benchmark_dir,
             "production": self.production_dir,
+            "ts": self.ts_dir,
         }[branch]
 
     @property

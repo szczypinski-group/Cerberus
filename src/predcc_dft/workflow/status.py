@@ -1,7 +1,8 @@
-"""Per-molecule progress: trunk steps 3-7 and both branches.
+"""Per-molecule progress: trunk steps 3-7 and both branches; TS counts.
 
 Written to derived/setup_status.csv. A branch column shows "-" for molecules
-outside that branch's selection (<branch>/molecules.txt).
+outside that branch's selection (<branch>/molecules.txt). The TS module works
+per reaction, so it only appears in the summary (channel states).
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from predcc_dft.protocol import lock, project
 from predcc_dft.protocol.config import Config
 from predcc_dft.protocol.io import read_toml
 from predcc_dft.structures import conformers, frequencies
+from predcc_dft.ts import stage as ts_stage
 
 COLUMNS = [
     "compound",
@@ -113,12 +115,38 @@ def run(cfg: Config) -> list[dict]:
     return rows
 
 
+def ts_summary(cfg: Config) -> dict:
+    """TS channels per state, and reactions with finished kinetics."""
+    rxns = ts_stage.reactions(cfg)
+    states: dict[str, int] = {}
+    for rxn in rxns:
+        for cdir in ts_stage.channel_dirs(cfg, rxn).values():
+            state, _ = ts_stage.channel_state(cfg, cdir)
+            states[state] = states.get(state, 0) + 1
+    done = 0
+    for rxn in rxns:
+        path = ts_stage.reaction_file(cfg, rxn["key"])
+        kin = read_toml(path).get("kinetics", {}) if path.exists() else {}
+        done += any(
+            k.get("summary", {}).get("status") == "complete"
+            for k in kin.values()
+        )
+    return {
+        "reactions": len(rxns),
+        "channels": dict(sorted(states.items())),
+        "kinetics complete": done,
+    }
+
+
 def summary(cfg: Config) -> dict:
     """Counts of molecules past each step, trunk and branches."""
     rows = run(cfg)
     n_methods = len(grid.methods(cfg))
     bench = [r for r in rows if r["bench_methods"] != "-"]
     prod = [r for r in rows if r["production"] != "-"]
+    extra = (
+        {"ts": ts_summary(cfg)} if (cfg.ts_dir / "reactions").exists() else {}
+    )
     return {
         "molecules": len(rows),
         "conformers done (4-5)": sum(r["steps4_5"] == "done" for r in rows),
@@ -141,6 +169,7 @@ def summary(cfg: Config) -> dict:
                 r["production"].endswith(" complete") for r in prod
             ),
         },
+        **extra,
     }
 
 

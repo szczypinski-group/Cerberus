@@ -16,6 +16,7 @@ jobs_dir = "jobs"               # SLURM manifests and array scripts per stage
 derived_dir = "derived"         # generated tables; safe to delete and rebuild
 benchmark_dir = "benchmark"     # branch: method grid, reference, ranking
 production_dir = "production"   # branch: locked production method
+ts_dir = "ts"                   # TS module: transition states and kinetics
 
 [inputs]
 # CSV (name,smiles), .smi (SMILES name) or TOML ([[molecule]] name/smiles).
@@ -143,6 +144,72 @@ ensemble_correction = true
 [analysis.parents]
 # imine = "benzaldehyde + aniline"
 
+# ---------------------------------------------------------------- SOP 10: TS
+[ts]
+# `predcc ts --submit`: transition states of every imine condensation of the
+# selection (ts/molecules.txt, as in the branches; no file = all), found with
+# autodE (xTB + ORCA), then the kinetics of each reaction ([ts.conditions]).
+# Proton shuttles, one per TS: none (direct 4-ring transfer), water, amine
+# (a second amine molecule), tfa (free acid, 8-ring relay) and tfa_salt
+# (the R-NH3+ CF3COO- ion pair formed by TFA and the amine).
+shuttles = ["none", "water", "amine", "tfa", "tfa_salt"]
+# Energies on the TS geometries and minima:
+#   "lock"  production/production.toml method + solvation model (single
+#           points on every TS, hemiaminal, TFA, salt and trunk species)
+#   "opt"   the r2SCAN-3c/CPCM energies of the Opt/Freq jobs (no extra jobs)
+#   "auto"  lock if production.toml exists, else opt
+energy = "auto"
+# After autodE: one ORCA Freq on each TS at the trunk's level, for G_corr
+# (same thermochemistry as the trunk species) and the imaginary-mode check.
+freq_keywords = "r2SCAN-3c Freq CPCM(acetonitrile) TightSCF"
+freq_blocks = ""
+imaginary_threshold_cm1 = 100.0  # exactly one mode, below -this
+
+[ts.autode]
+# autodE runs inside each ts_autode SLURM task. It must be installed in the
+# environment that runs predcc on the cluster: uv sync --extra ts
+python = ""                     # "" = the Python running predcc
+hcode = "orca"                  # high level: TS optimisation, Hessians
+lcode = "xtb"                   # low level: the first path search
+solvent = "acetonitrile"        # autodE adds CPCM(acetonitrile) / xTB GBSA
+min_imag_freq_cm1 = 40.0        # autodE's own threshold for a TS guess
+
+# ORCA keyword lines autodE uses (one per kind of calculation). autodE adds
+# the solvent model itself: do not put CPCM(...) here.
+[ts.autode.keywords]
+low_opt = "LooseOpt r2SCAN-3c"
+grad = "EnGrad r2SCAN-3c"
+low_sp = "SP r2SCAN-3c"
+opt = "Opt r2SCAN-3c TightSCF"
+opt_ts = "OptTS Freq r2SCAN-3c TightSCF"
+hess = "Freq r2SCAN-3c TightSCF"
+sp = "SP r2SCAN-3c TightSCF"
+
+[ts.autode.blocks]              # %blocks added to those keyword lines
+low_opt = "%geom\n  MaxIter 10\nend"
+opt_ts = "%geom\n  Calc_Hess true\n  Recalc_Hess 20\n  Trust -0.1\n  MaxIter 100\nend"
+
+[ts.minima]                     # hemiaminal, TFA and ammonium-TFA salt
+conformers = 3                  # RDKit/MMFF conformers optimised per species
+keywords = "r2SCAN-3c TightOpt Freq CPCM(acetonitrile) TightSCF"
+blocks = ""
+
+[ts.conditions]                 # the experiment the kinetics simulates
+temperature_k = 298.15
+aldehyde_mol_l = 0.05           # 50 mM (50 mmol in 1 L)
+amine_mol_l = 0.05
+tfa_mol_percent = 2.0           # relative to the aldehyde
+water_mol_l = 0.0               # added water; reaction water is produced
+time_h = 24.0
+
+[ts.kinetics]
+points = 200                    # log-spaced output times per reaction
+diffusion_limit_m1_s1 = 1.0e9   # cap on k_f, and k of the acid-base step
+barrier_shift_kcal_mol = 1.0    # +- band on every barrier (uncertainty)
+# dG (kcal/mol) of TFA + amine -> salt; "computed" = from the TS module's
+# species. A number overrides it (e.g. from the pKa difference in MeCN).
+salt_dg_kcal_mol = "computed"
+
 # ---------------------------------------------------------------- automation
 [pipeline]
 # `predcc run --submit` submits every ready stage, then a small driver job that
@@ -190,6 +257,26 @@ mem_per_cpu_mb = 4000
 time = "24:00:00"
 
 [slurm.stage.production]       # locked method + solvation single points
+cpus = 8
+mem_per_cpu_mb = 4000
+time = "24:00:00"
+
+[slurm.stage.ts_minima]         # TS module: hemiaminal / TFA / salt Opt+Freq
+cpus = 8
+mem_per_cpu_mb = 3000
+time = "24:00:00"
+
+[slurm.stage.ts_autode]         # one autodE search per TS (xTB + ORCA)
+cpus = 16
+mem_per_cpu_mb = 3000
+time = "72:00:00"
+
+[slurm.stage.ts_freq]           # ORCA Freq on each autodE TS
+cpus = 16
+mem_per_cpu_mb = 3000
+time = "24:00:00"
+
+[slurm.stage.ts_sp]             # locked method + solvation single points
 cpus = 8
 mem_per_cpu_mb = 4000
 time = "24:00:00"

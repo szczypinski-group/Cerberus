@@ -5,7 +5,9 @@ From aldehyde and amine lists, the pipeline builds every product, finds
 conformers, optimises them and checks their structures. From that one set of
 geometries it runs either a **benchmark** (many functionals and basis sets
 against DLPNO-CCSD(T)/CBS, ranked) or **production** (one locked method for
-many molecules), or both.
+many molecules), or both. A separate **TS module** locates the transition
+states of each condensation (with proton shuttles, including TFA) and turns
+them into rate constants and concentrations over time.
 
 ## Install
 
@@ -13,7 +15,12 @@ many molecules), or both.
 git clone git@github.com:szczypinski-group/PreDCC_DFT.git
 cd PreDCC_DFT
 uv sync                    # add --extra censo to install CENSO into the same env
+uv sync --extra ts         # on the cluster, for `predcc ts`: builds autodE 1.4.5
 ```
+
+autodE is not on PyPI, so `--extra ts` builds it from its GitHub tag (a C++
+compiler is needed; the cluster's usual `gcc` is enough). Combine extras with
+`uv sync --extra censo --extra ts`.
 
 CREST 3, xTB and ORCA (5 or 6) must be available on the cluster. Load them with
 `[slurm] modules` in the study settings.
@@ -40,7 +47,7 @@ into each other. The only link between them is the production lock.
 ## Usage
 
 ```bash
-uv run predcc init ~/imine_study      # once: config/, inputs/, benchmark/, production/
+uv run predcc init ~/imine_study      # once: config/, inputs/, benchmark/, production/, ts/
 cd ~/imine_study
 # edit config/settings.toml ([slurm] account/partition/modules) and inputs/*.txt
 ```
@@ -54,6 +61,8 @@ cd ~/imine_study
 | `predcc promote` | benchmark candidate → `production/production.toml` |
 | `predcc promote --method wb97mv_def2tzvp --solvation smd_mecn` | … or choose by hand |
 | `predcc production [--submit]` | trunk (where needed) + the production branch |
+| `predcc ts [--submit]` | trunk (where needed) + the TS module: barriers, rates, kinetics |
+| `predcc show benzaldehyde` | a molecule's `index/<key>.toml` (name, SMILES, key or InChIKey) |
 | `predcc status` / `predcc cancel` | progress of trunk and branches / stop all jobs |
 
 Without `--submit` a command is a dry run: it does the local steps, writes the
@@ -147,6 +156,106 @@ tables, so versions are never mixed. Every lock is also archived in
 - **No queue races:** the task list is written into each array script, so
   rewriting the script cannot move a queued task onto another folder.
 
+## TS module and kinetics (SOP 10)
+
+`predcc ts --submit` takes every imine condensation of `ts/molecules.txt`
+(same format as the branch subsets; no entries = all, which is a lot of TSs)
+and runs both steps of the mechanism
+
+```
+aldehyde + amine  ──addition──►  hemiaminal  ──dehydration──►  imine + water
+```
+
+once per proton shuttle in `[ts] shuttles`. In each step one proton moves from
+the amine N–H to an oxygen, either directly (`none`, a strained 4-ring TS) or
+relayed by a shuttle that comes out unchanged:
+
+| Shuttle | Species | Relay |
+| --- | --- | --- |
+| `water` | H₂O | accepts on O, gives an O–H |
+| `amine` | a second amine molecule | accepts on N, gives an N–H |
+| `tfa` | CF₃COOH | accepts on C=O, gives the O–H (8-membered ring) |
+| `tfa_salt` | R-NH₃⁺ ·CF₃COO⁻ ion pair | accepts on O⁻, gives an N⁺–H; leaves as amine + TFA |
+
+**Per TS (one channel), with autodE:**
+
+1. RDKit builds the reactant and product complexes with the same atom order,
+   and the step's exact forming and breaking bonds are written down
+   (`channel.toml` → `[mechanism]`).
+2. **autodE** (`ts_autode` stage, one SLURM task per TS) gets these complexes
+   and bonds. It tries a TS template, an xTB adaptive path, an ORCA adaptive
+   path and a NEB, optimises each guess with OptTS (r²SCAN-3c, CPCM
+   acetonitrile, exact Hessian), and accepts it only if the imaginary mode
+   forms and breaks the right bonds, or a displacement along it links the two
+   complexes. A method that fails moves on to the next; every attempt is
+   recorded.
+3. autodE refuses more forming than breaking bonds, so **additions are
+   searched in reverse** (hemiaminal → aldehyde + amine), which is the same
+   TS. Dehydrations run forward. autodE's automatic bond search stops at 2
+   forming + 2 breaking bonds; giving it our own bonds is what lets the
+   shuttled steps (2 forming + 3 breaking in the searched direction) work.
+4. `ts_freq`: one ORCA Freq at the trunk's level on the autodE TS gives G_corr
+   with the same thermochemistry as the trunk species, and must show exactly
+   one imaginary mode below −100 cm⁻¹ (state `verified`; otherwise
+   `bad_ts`, or `autode_failed` if no TS was found).
+
+The minima the kinetics needs come from the trunk (aldehyde, amine, imine,
+water: `best.xyz`) or are optimised here (hemiaminal, TFA and the
+ammonium–TFA salt: a few RDKit conformers, ORCA Opt+Freq, lowest G).
+
+**One TOML per molecule and per TS.** Every path and number about a molecule,
+reactant or product alike, is in its `ts/species/<label>/ts.toml`:
+name, role (aldehyde, amine, imine, water, hemiaminal, tfa, salt), its side in
+each reaction (`reactant`, `product`, `intermediate`, `shuttle`), the trunk
+files it comes from, every conformer job (input, output, final geometry,
+energies), every single point (output, record) and its energies per protocol.
+Every TS has the same in its channel's `channel.toml` (mechanism, autodE task,
+log, result and attempts, `ts.xyz`, the Freq job, energies), and
+`reaction.toml` points to all of them and holds the kinetics. All paths are
+relative to the study folder.
+
+**Energies** (`[ts] energy`): with a production lock, its method and solvation
+model run as single points on every TS and minimum (folders `v<version>`);
+without one, the r²SCAN-3c/CPCM energies of the optimisations are used
+(folders `opt`). G = E + G_corr (OptTS/Opt Freq) + ΔG_solv + RT ln 24.46,
+so every barrier and reaction free energy refers to 1 mol/L.
+
+**Kinetics:** a mass-action model of A (aldehyde), N (free amine), H
+(hemiaminal), I (imine), W (water), T (free TFA) and S (salt), one elementary
+reaction per verified channel:
+
+- k_f = (k_B T/h) exp(−ΔG‡/RT), with ΔG‡ from the separated reactants and
+  the shuttle. A shuttled addition is termolecular (M⁻² s⁻¹), so its rate
+  scales with the shuttle's concentration. That is how 2 mol% TFA enters:
+  through [T] and [S], not through a changed barrier.
+- k_r = k_f / K, with K from the computed ΔG. Every channel therefore leads to
+  the same equilibrium, and the long-time ratio [I][W]/([A][N]) is checked
+  against K (`log_q_eq` vs `log_k_condensation`).
+- TFA + amine ⇌ salt runs at the diffusion limit, with K from the computed
+  salt free energy (or `[ts.kinetics] salt_dg_kcal_mol`). Aliphatic amines
+  (pKa(MeCN) ≈ 17–18) bind most of the TFA (pKa ≈ 12.7) as the salt; anilines
+  (anilinium ≈ 10.6) mostly leave it free.
+- Water starts at `[ts.conditions] water_mol_l` (default 0) and is produced
+  with the imine, so [W] = [I] throughout: no Karl Fischer value is needed.
+- Every barrier is shifted by ±1 kcal/mol (`barrier_shift_kcal_mol`) for an
+  uncertainty band on t50, t95 and the 24 h yield.
+
+Default conditions (`[ts.conditions]`): 298.15 K, aldehyde and amine 0.050
+mol/L each (50 mmol in 1 L; change both if your 50 mmol is in another
+volume), TFA 2 mol% of the aldehyde (1.0 mM), 24 h.
+
+**Outputs** in `ts/derived/<tag>/`:
+
+| File | One row per | Columns |
+| --- | --- | --- |
+| `summary.csv` | reaction | ΔG and log K, equilibrium and 24 h concentrations, yield, t50/t95 (central, fast, slow), main channel per step, fraction of TFA as salt |
+| `barriers.csv` | reaction × step × shuttle | state, imaginary mode, ΔG‡, ΔG, molecularity, k_f, k_r, units, share of the step's flux |
+| `kinetics/<reaction>.csv` | time point | t (s, h), every concentration, imine yield |
+| `species.csv` | minimum | E, G_corr, ΔG_solv, standard state, G |
+
+`reaction.toml` of each reaction holds the same summary and channel rows under
+`[kinetics.<tag>]`, with the path of its concentration table.
+
 ## Study folder
 
 ```
@@ -154,7 +263,10 @@ imine_study/
 ├── config/            settings.toml, censo2rc
 ├── inputs/            aldehydes.txt, amines.txt
 ├── molecules.toml  reactions.toml  rejected.toml
+├── index/<key>.toml                         ROOT FILE of each molecule → every
+│                                            module's file below
 ├── molecules/<key>/                         TRUNK (shared, read-only to branches)
+│   ├── trunk.toml                           everything the trunk has
 │   ├── molecule.toml  seeds/  conformers/  frequencies/
 │   └── structure.toml  best.xyz
 ├── jobs/<stage>/  jobs/driver/  jobs/submitted.toml
@@ -163,6 +275,7 @@ imine_study/
 ├── benchmark/                               BRANCH 1
 │   ├── methods.toml  molecules.txt  molecules.toml  experimental/
 │   ├── molecules/<key>/
+│   │   ├── benchmark.toml                   everything the benchmark has
 │   │   ├── reference/  ref_x/ ref_y/ solv_gas/ solv_<model>/ reference.toml
 │   │   └── methods/    <method>/record.toml …  summary.toml
 │   ├── jobs/reference/  jobs/benchmark/
@@ -170,15 +283,55 @@ imine_study/
 │                  errors_wide.csv  method_ranking.csv  level_summary.csv
 │                  calculations.csv  production_candidate.toml
 │
-└── production/                              BRANCH 2
-    ├── production.toml  locks/  molecules.txt  molecules.toml  experimental/
-    ├── molecules/<key>/v<version>/
-    │   ├── energy/  solv_gas/  solv_<model>/      record.toml each
-    │   └── result.toml
-    ├── jobs/production/
-    └── derived/v<version>/  species_energies.csv  reaction_energies.csv
-                             calculations.csv  (errors.csv with experiment)
+├── production/                              BRANCH 2
+│   ├── production.toml  locks/  molecules.txt  molecules.toml  experimental/
+│   ├── molecules/<key>/
+│   │   ├── production.toml                  everything, every version
+│   │   └── v<version>/  energy/ solv_gas/ solv_<model>/  result.toml
+│   ├── jobs/production/
+│   └── derived/v<version>/  species_energies.csv  reaction_energies.csv
+│                            calculations.csv  (errors.csv with experiment)
+│
+└── ts/                                      TS MODULE
+    ├── molecules.txt  molecules.toml
+    ├── reactions/<CND key>/
+    │   ├── reaction.toml                 molecules, channels, [kinetics.<tag>]
+    │   └── <step>_<shuttle>/             e.g. addition_tfa
+    │       ├── channel.toml              everything about this TS
+    │       ├── reactant.xyz  product.xyz
+    │       ├── autode/  task.toml run.sh autode.log autode_result.toml
+    │       │            ts.xyz  work/ (every autodE ORCA/xTB file)
+    │       ├── freq/
+    │       └── sp/<tag>/
+    ├── species/<label>/                  compound keys (trunk), hemiaminal_<key>,
+    │   ├── ts.toml                       tfa, salt_<amine>: everything about it
+    │   ├── conformers.xyz  conf<i>/  best.xyz   (optimised here only)
+    │   └── sp/<tag>/
+    ├── jobs/ts_minima/ ts_autode/ ts_freq/ ts_sp/
+    └── derived/<tag>/  summary.csv  barriers.csv  species.csv  kinetics/
 ```
+
+**One file per molecule per module, one root file per molecule.** Each module
+writes one TOML per molecule in its own folder, named after the module, with
+the molecule's identity, status, every file path (inputs, outputs, records,
+geometries) and its results:
+
+| Module | File |
+| --- | --- |
+| trunk | `molecules/<key>/trunk.toml`: seeds, CREST/CENSO files, every Opt+Freq attempt, structure, best geometry and energies |
+| benchmark | `benchmark/molecules/<key>/benchmark.toml`: every reference, solvation and method job, the DLPNO/CBS reference, ΔG_solv, method energies |
+| production | `production/molecules/<key>/production.toml`: per version, every job, method, solvation model, E, ΔG_solv, G |
+| ts | `ts/species/<label>/ts.toml`: role and side in each reaction, conformers, single points, energies |
+
+`index/<key>.toml` is the root file of the molecule: name, role, SMILES and
+InChIKeys once, then one table per module with the path of that module's
+file, whether the molecule is in the module's selection, and a one-line
+status. Hemiaminals, TFA and salts, which exist only in the TS module, get
+their own `index/<label>.toml`. The index is rebuilt after every round of
+every chain and by `predcc analyse`; the modules never write into it or into
+each other. `predcc show <name | SMILES | key | InChIKey>` prints the
+matching index file. Everything is plain TOML, so `grep -r benzaldehyde
+index/` or a few lines of Python finds any molecule.
 
 **The same labels everywhere.** Every molecule is the same compound key
 (first InChIKey block) in the trunk and in both branches, and every
@@ -282,6 +435,11 @@ available for debugging.
   `dGsolv`) were tested only against mocked output. Compare them with one real
   output from your ORCA version.
 - **CENSO:** `censo2rc` was validated with CENSO 3.0.8.
+- **TS module:** run `predcc ts` on one reaction with one shuttle first and
+  read `autode/autode.log` and `channel.toml` → `[autode] attempts`. Check
+  that autodE finds `orca` and `xtb` on the node (or set `ORCA_BIN`), that
+  r²SCAN-3c works in autodE's ORCA inputs (`autode/work/*.inp`), and look at a
+  few `addition_tfa_salt` TSs by eye: the ion pair can rearrange during OptTS.
 - **Pilot (SOP 13.2):** check that E and Z get different InChIKeys (collisions
   get a `-E`/`-Z` suffix and are flagged in `molecules.toml`) and that every
   SMARTS template gives the expected products.
@@ -302,6 +460,13 @@ available for debugging.
   implemented yet.
 - Reactions live in one `reactions.toml`, not one file per reaction.
 - ORCA outputs are not gzipped, and figures (SOP 2.7) are not generated yet.
+- **TS module:** SOP 1.3 has no catalyst; here 2 mol% TFA is modelled
+  explicitly (free acid and ammonium salt as shuttles). TSs are validated by
+  autodE's imaginary-mode check plus an ORCA Freq, not by a full IRC. One TS
+  conformer per channel, at most one shuttle per TS, no DLPNO check of the
+  barriers, no iminium/protonated-imine pathway, and kinetics per single
+  condensation (exchange reactions and whole-library DCC kinetics come later).
+  Auxiliary minima use RDKit conformers, not CREST.
 
 ## Code layout
 
@@ -318,15 +483,16 @@ src/predcc_dft/
 ├── analysis/     shared, branch-neutral: species/reaction ΔG, errors, CSV tables
 ├── benchmark/    branch: DLPNO + solvation, method grid, ranking, candidate
 ├── production/   branch: locked method + solvation, G/ΔG/log K per version
+├── ts/           SOP 10: mechanisms, autodE TS searches, rates, kinetics
 └── workflow/     the predcc command, chains and SLURM drivers, status
 ```
 
 **The dependency rule.** Imports only go downward: `workflow` → the branches
 → the shared levels → the foundations. The trunk levels never import each
 other or a branch, and **`benchmark/` and `production/` never import each
-other**: a later level reads only files an earlier one wrote, through
-`protocol/project.py`. `tests/test_layers.py` fails if any module breaks this.
-Later SOP parts (descriptors, TS, ML) belong in new sibling packages.
+other**, nor does `ts/`: a later level reads only files an earlier one wrote,
+through `protocol/project.py`. `tests/test_layers.py` fails if any module
+breaks this. Later SOP parts (descriptors, ML) belong in new sibling packages.
 
 ## Development
 

@@ -80,6 +80,11 @@ def _matches(entry: str, rec: dict) -> bool:
     )
 
 
+def matches(entry: str, rec: dict) -> bool:
+    """True if a name, compound key, InChIKey or SMILES names this record."""
+    return _matches(entry.strip(), rec)
+
+
 def selection_file(cfg: Config, branch: str) -> Path:
     """<branch>/molecules.txt: the branch's subset of the trunk molecules."""
     return cfg.branch_dir(branch) / "molecules.txt"

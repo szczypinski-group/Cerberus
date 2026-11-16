@@ -14,7 +14,7 @@ Same columns as the benchmark tables, so one analysis script reads both.
 from __future__ import annotations
 
 from predcc_dft.analysis import assembly, errors, tables
-from predcc_dft.production import stage
+from predcc_dft.production import molecule, stage
 from predcc_dft.protocol import lock, project, records
 from predcc_dft.protocol.config import Config
 from predcc_dft.protocol.io import read_toml
@@ -104,6 +104,7 @@ def local_steps(cfg: Config) -> dict:
     """Collect every finished production job, then rebuild derived/."""
     return {
         "production (single points)": stage.collect(cfg),
+        "production.toml files": molecule.run(cfg),
         "analysis": run(cfg),
     }
 

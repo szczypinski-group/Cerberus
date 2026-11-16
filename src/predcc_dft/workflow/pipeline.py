@@ -1,4 +1,4 @@
-"""One command per chain: ``predcc run | benchmark | production [--submit]``.
+"""One command per chain: ``predcc run | benchmark | production | ts``.
 
 A study has one shared TRUNK (steps 1-7: inputs -> best.xyz) and two BRANCHES
 that start from the same best.xyz. Each chain runs the trunk plus, optionally,
@@ -7,6 +7,7 @@ one branch:
     run          trunk only
     benchmark    trunk + benchmark branch (method grid, DLPNO, ranking)
     production   trunk + production branch (locked method, many molecules)
+    ts           trunk + TS module (transition states, rates, kinetics)
 
 Each call ("round") does everything that can be done with the results on disk:
 
@@ -46,21 +47,31 @@ from predcc_dft.protocol import lock, records
 from predcc_dft.protocol.config import Config
 from predcc_dft.protocol.io import read_toml, write_text, write_toml
 from predcc_dft.species import prepare
-from predcc_dft.structures import conformers, dft_opt, frequencies, sanity
-from predcc_dft.workflow import status
+from predcc_dft.structures import (
+    conformers,
+    dft_opt,
+    frequencies,
+    sanity,
+    summary,
+)
+from predcc_dft.ts import report as ts_report
+from predcc_dft.ts import stage as ts_stage
+from predcc_dft.workflow import index, status
 
 log = logging.getLogger(__name__)
 
-CHAINS = ("trunk", "benchmark", "production")
+CHAINS = ("trunk", "benchmark", "production", "ts")
 TRUNK_STAGES = ("conformers", "dft_opt", "frequencies")
 BRANCH_STAGES = {
     "benchmark": ("reference", "benchmark"),
     "production": ("production",),
+    "ts": ts_stage.STAGES,
 }
 COMMAND = {
     "trunk": "run",
     "benchmark": "benchmark",
     "production": "production",
+    "ts": "ts",
 }
 
 
@@ -81,6 +92,7 @@ def _branch(chain: str) -> ModuleType | None:
     return {
         "benchmark": benchmark_report,
         "production": production_report,
+        "ts": ts_report,
     }.get(chain)
 
 
@@ -96,6 +108,7 @@ def trunk_local_steps(cfg: Config) -> dict:
     """Step 7 and the trunk's calculations.csv; cheap, run every round."""
     return {
         "check (step 7)": sanity.run(cfg),
+        "trunk.toml files": summary.run(cfg),
         "trunk calculations.csv rows": records.collect_csv(cfg),
     }
 
@@ -278,6 +291,7 @@ def _advance(
     if force_prepare or not prepare.up_to_date(cfg):
         report["prepare (steps 1-3)"] = prepare.run(cfg)
     report.update(local_steps(cfg, chain))
+    report["index/<molecule>.toml files"] = index.run(cfg)
 
     writers = dict(_trunk_writers(cfg))
     branch = _branch(chain)

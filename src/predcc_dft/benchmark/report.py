@@ -15,7 +15,7 @@ Rebuilt every round from the branch's records into benchmark/derived/:
 from __future__ import annotations
 
 from predcc_dft.analysis import assembly, errors, tables
-from predcc_dft.benchmark import candidate, grid, ranking, reference
+from predcc_dft.benchmark import candidate, grid, molecule, ranking, reference
 from predcc_dft.protocol import constants, project, records
 from predcc_dft.protocol.config import Config
 from predcc_dft.protocol.io import read_toml, write_toml
@@ -106,6 +106,7 @@ def local_steps(cfg: Config) -> dict:
     return {
         "reference (steps 8, 10)": reference.collect(cfg),
         "methods (step 9)": grid.collect(cfg),
+        "benchmark.toml files": molecule.run(cfg),
         "analysis": run(cfg),
     }
 

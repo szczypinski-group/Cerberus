@@ -74,6 +74,10 @@ MPI_STAGES = {
     "reference",
     "benchmark",
     "orca_input",
+    "ts_minima",
+    "ts_autode",  # autodE starts ORCA with one MPI rank per core
+    "ts_freq",
+    "ts_sp",
 }
 
 
