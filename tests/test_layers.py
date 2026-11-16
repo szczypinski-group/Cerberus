@@ -1,13 +1,13 @@
 """Architecture test: imports only go downward, and the branches are insular.
 
-    workflow  ->  benchmark | production        (the two branches)
+    workflow  ->  benchmark | production | ts   (the branches, TS module)
               ->  energies | analysis           (shared by both branches)
               ->  species | structures          (the trunk, steps 1-7)
               ->  backends | chemistry | protocol
 
 The trunk levels never import each other or a branch; a later level reads
 the files an earlier one wrote (through predcc_dft.protocol.project). The
-benchmark and production branches never import each other.
+benchmark and production branches and the TS module never import each other.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ ALLOWED = {
     "analysis": {"analysis", "protocol"},
     "benchmark": {"benchmark", "energies", "analysis"} | FOUNDATION,
     "production": {"production", "energies", "analysis"} | FOUNDATION,
+    "ts": {"ts", "energies", "analysis"} | FOUNDATION,
     "workflow": {
         "workflow",
         "species",
@@ -38,6 +39,7 @@ ALLOWED = {
         "analysis",
         "benchmark",
         "production",
+        "ts",
     }
     | FOUNDATION,
 }

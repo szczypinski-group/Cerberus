@@ -183,7 +183,11 @@ def test_production_end_to_end(tmp_path: Path) -> None:  # noqa: PLR0915
             cfg, lock.build(cfg, "r2scan3c", "smd_mecn", "1.0"), force=False
         )
     # A new version lives beside the old one; v1.0 is untouched
-    v10 = snapshot(root / "production" / "molecules")
+    v10 = {  # files of v1.0 (production.toml beside it lists every version)
+        k: v
+        for k, v in snapshot(root / "production" / "molecules").items()
+        if "/v1.0/" in k
+    }
     assert (
         main(
             [
