@@ -16,6 +16,7 @@ git clone git@github.com:szczypinski-group/PreDCC_DFT.git
 cd PreDCC_DFT
 uv sync                    # add --extra censo to install CENSO into the same env
 uv sync --extra ts         # on the cluster, for `predcc ts`: builds autodE 1.4.5
+uv sync --extra nmr        # for `predcc nmr`: nmrglue
 ```
 
 autodE is not on PyPI, so `--extra ts` builds it from its GitHub tag (a C++
@@ -62,6 +63,7 @@ cd ~/imine_study
 | `predcc promote --method wb97mv_def2tzvp --solvation smd_mecn` | … or choose by hand |
 | `predcc production [--submit]` | trunk (where needed) + the production branch |
 | `predcc ts [--submit]` | trunk (where needed) + the TS module: barriers, rates, kinetics |
+| `predcc nmr [benchmark\|production]` | measured log K from the NMR spectra listed in `<branch>/nmr/samples.toml` |
 | `predcc show benzaldehyde` | a molecule's `index/<key>.toml` (name, SMILES, key or InChIKey) |
 | `predcc status` / `predcc cancel` | progress of trunk and branches / stop all jobs |
 
@@ -310,6 +312,74 @@ imine_study/
     ├── jobs/ts_minima/ ts_autode/ ts_freq/ ts_sp/
     └── derived/<tag>/  summary.csv  barriers.csv  species.csv  kinetics/
 ```
+
+**Keeping the data in its own folder layout.** The package holds no study
+data; a study is any folder outside the repository (`--root`, or the current
+folder). The branch folders can sit anywhere inside it:
+
+```bash
+uv run predcc init C:/Szcz_Projects/project --data-dir data --experimental-dir nmr
+```
+
+```
+project/
+├── config/  inputs/  molecules/  jobs/  derived/  index/     trunk
+└── data/
+    ├── benchmark/   molecules/  nmr/  jobs/  derived/  methods.toml
+    ├── production/  molecules/  nmr/  jobs/  derived/  production.toml
+    └── ts/
+```
+
+This writes `benchmark_dir`, `production_dir`, `ts_dir` and
+`experimental_dir` into `config/settings.toml` (`[project]`); writing those
+keys yourself before `predcc init` works the same. Every command then reads
+and writes there. The measured-data folder (`nmr/`) is read for
+`<reaction key>.toml` files directly in it (measured log K); raw data
+(spectra, integrals) can sit beside them in sub-folders and is not touched.
+
+**Measured K from NMR.** Put each Bruker experiment folder (`fid`,
+`acqus`, `pdata/1/1r`, …) anywhere below a branch's measured-data folder and
+list it in that folder's `samples.toml` (created by `predcc init`):
+
+```toml
+[defaults]                      # any key can also be set per sample
+aldehyde_ppm = [9.90, 10.10]    # aldehyde CHO signal
+imine_ppm = [8.30, 8.60]        # imine CH=N signal
+aldehyde_protons = 1            # protons in each integrated signal
+imine_protons = 1
+spectrum = "auto"               # processed (pdata) if present, else raw FID
+
+[[sample]]
+name = "benzaldehyde + aniline, 24 h"
+data = "raw/benzaldehyde_aniline/10"   # relative to the nmr/ folder
+imine = "benzaldehyde + aniline (imine)"  # name, SMILES, key or InChIKey
+aldehyde_mol_l = 0.050
+amine_mol_l = 0.050
+```
+
+The imine is looked up in `molecules.toml`; its stored origins give the
+aldehyde, the amine and the reaction (`aldehyde` and `amine` can be named
+instead, or as well, to pick one of several origins). Imines formed at one
+of several sites (`multi_site`, e.g. from a dialdehyde) are refused, since
+the conversion assumes one aldehyde group.
+
+`uv run predcc nmr` reads each spectrum with nmrglue (TopSpin's processed
+spectrum when present; otherwise the raw FID with automatic phasing),
+integrates both ranges above a straight local baseline, and computes the
+conversion x = (I_imine/n_imine) / (I_imine/n_imine + I_aldehyde/n_aldehyde).
+With [imine] = x A₀, [aldehyde] = (1 − x) A₀, [amine] = N₀ − x A₀ and
+[water] = W₀ + x A₀ (water is produced with the imine), K = [imine][water] /
+([aldehyde][amine]). Samples of the same aldehyde + amine are averaged into
+`<reaction key>.toml` (log K, uncertainty from replicates and integration,
+every sample's integrals and conversion), which the benchmark and production
+analyses then compare against. `derived/nmr_samples.csv` lists every sample.
+Each result file carries the imine's, aldehyde's and amine's identity from
+`molecules.toml` (compound key, name, SMILES, InChIKeys, links to their
+`index/<key>.toml`), and the imine's `index/<key>.toml` gets a `[measured]`
+table per branch (log K, uncertainty, number of samples, file).
+A `<reaction key>.toml` that you wrote by hand is never overwritten. Check
+the integration ranges on a real spectrum first: overlapping signals or a
+poor phase/baseline in the range go straight into K.
 
 **One file per molecule per module, one root file per molecule.** Each module
 writes one TOML per molecule in its own folder, named after the module, with

@@ -33,6 +33,8 @@ dependencies = [
 censo = ["censo>=3.0"]
 # autodE finds the transition states of the TS module (on the nodes). It is
 # not on PyPI; this builds it from its v1.4.5 tag (needs a C++ compiler).
+# `predcc nmr`: measured log K from Bruker NMR spectra.
+nmr = ["nmrglue>=0.10"]
 ts = [
     "autode @ git+https://github.com/duartegroup/autodE@v1.4.5",
     "networkx>=3.0",  # autodE's own dependencies, not declared by it
