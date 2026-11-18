@@ -17,6 +17,10 @@ derived_dir = "derived"         # generated tables; safe to delete and rebuild
 benchmark_dir = "benchmark"     # branch: method grid, reference, ranking
 production_dir = "production"   # branch: locked production method
 ts_dir = "ts"                   # TS module: transition states and kinetics
+# Measured data of a branch: <branch dir>/<experimental_dir>/, one
+# <reaction key>.toml per measured equilibrium (log K). Other files and
+# folders there (raw spectra) are left alone.
+experimental_dir = "experimental"
 
 [inputs]
 # CSV (name,smiles), .smi (SMILES name) or TOML ([[molecule]] name/smiles).

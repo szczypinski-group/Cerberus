@@ -85,6 +85,11 @@ class Config(dict):
         """TS module: transition states, rates and kinetics (SOP 10)."""
         return self.path(self["project"].get("ts_dir", "ts"))
 
+    def experimental_dir(self, branch: str) -> Path:
+        """Measured data of a branch: <branch>/<[project] experimental_dir>."""
+        name = self["project"].get("experimental_dir", "experimental")
+        return self.branch_dir(branch) / name
+
     def branch_dir(self, branch: str) -> Path:
         """Root folder of a branch: benchmark, production or ts."""
         return {

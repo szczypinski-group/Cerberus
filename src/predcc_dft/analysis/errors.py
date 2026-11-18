@@ -12,6 +12,11 @@ from predcc_dft.protocol.io import read_toml
 log = logging.getLogger(__name__)
 
 
+# Files in a measured-data folder that are not one reaction's log K:
+# samples.toml lists the NMR samples `predcc nmr` evaluates.
+NOT_MEASUREMENTS = {"samples.toml"}
+
+
 def experimental(exp_dir: Path, reactions: dict) -> dict[str, dict]:
     """Reaction key -> {dg_kcal_mol, log_k, uncertainty} usable for comparison.
 
@@ -27,7 +32,7 @@ def experimental(exp_dir: Path, reactions: dict) -> dict[str, dict]:
     if not exp_dir.exists():
         return out
     for path in sorted(exp_dir.glob("*.toml")):
-        if path.name.startswith("_"):
+        if path.name.startswith("_") or path.name in NOT_MEASUREMENTS:
             continue
         data = read_toml(path)
         key = data.get("reaction", path.stem)

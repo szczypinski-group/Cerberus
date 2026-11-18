@@ -31,6 +31,7 @@ ALLOWED = {
     "benchmark": {"benchmark", "energies", "analysis"} | FOUNDATION,
     "production": {"production", "energies", "analysis"} | FOUNDATION,
     "ts": {"ts", "energies", "analysis"} | FOUNDATION,
+    "experiment": {"experiment"} | FOUNDATION,
     "workflow": {
         "workflow",
         "species",
@@ -40,6 +41,7 @@ ALLOWED = {
         "benchmark",
         "production",
         "ts",
+        "experiment",
     }
     | FOUNDATION,
 }

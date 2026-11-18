@@ -80,7 +80,7 @@ def run(cfg: Config) -> dict:
     d.mkdir(parents=True, exist_ok=True)
     tables.write_csv(d / "species_energies.csv", list(species.values()))
     tables.write_csv(d / "reaction_energies.csv", rxn_rows)
-    exp = errors.experimental(cfg.production_dir / "experimental", reactions)
+    exp = errors.experimental(cfg.experimental_dir(BRANCH), reactions)
     err_rows = errors.errors(cfg, rxn_rows, exp, None) if exp else []
     if err_rows:
         tables.write_csv(d / "errors.csv", err_rows)

@@ -69,6 +69,44 @@ def _ts_entry(cfg: Config, label: str) -> dict:
     return entry
 
 
+def _measured(cfg: Config) -> dict[str, dict]:
+    """Imine compound -> {branch: measured log K} from the branches' files.
+
+    Every <reaction key>.toml in a branch's measured-data folder (written
+    by `predcc nmr` or by hand) is linked to the imine of that reaction.
+    """
+    if not cfg.reactions_file.exists():
+        return {}
+    imine_of = {
+        r["key"]: p["compound"]
+        for r in read_toml(cfg.reactions_file).get("condensation", [])
+        for p in r["products"]
+        if p["role"] == "imine"
+    }
+    out: dict[str, dict] = {}
+    for branch in ("benchmark", "production"):
+        folder = cfg.experimental_dir(branch)
+        for path in sorted(folder.glob("*.toml")) if folder.exists() else []:
+            if path.name.startswith("_") or path.name == "samples.toml":
+                continue
+            data = read_toml(path)
+            key = data.get("reaction", path.stem)
+            compound = data.get("imine", {}).get("compound") or imine_of.get(
+                key
+            )
+            if compound is None or "log_k" not in data:
+                continue
+            out.setdefault(compound, {})[branch] = {
+                "file": _rel(cfg, path),
+                "reaction": key,
+                "log_k": data["log_k"],
+                "log_k_uncertainty": data.get("log_k_uncertainty", 0.0),
+                "n_samples": data.get("n_samples", 1),
+                "source": data.get("source", "by hand"),
+            }
+    return out
+
+
 def _trunk_molecule(cfg: Config, rec: dict, sel: dict) -> dict:
     t = trunk_summary.path(cfg, rec)
     b = benchmark_molecule.path(cfg, rec)
@@ -132,8 +170,11 @@ def run(cfg: Config) -> int:
         return 0
     sel = {b: _selected(cfg, b) for b in ("benchmark", "production", "ts")}
     out: dict[str, dict] = {}
+    measured = _measured(cfg)
     for rec in project.molecules(cfg):
         out[rec["compound"]] = _trunk_molecule(cfg, rec, sel)
+        if rec["compound"] in measured:
+            out[rec["compound"]]["measured"] = measured[rec["compound"]]
     for p in sorted((cfg.ts_dir / "species").glob("*/ts.toml")):
         if p.parent.name not in out:
             out[p.parent.name] = _ts_only(cfg, p.parent.name)

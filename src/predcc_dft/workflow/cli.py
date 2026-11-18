@@ -10,6 +10,7 @@ A study is one folder: a shared trunk (inputs -> best.xyz) and two branches.
     predcc promote                  benchmark candidate -> production lock
     predcc production --submit      trunk + production (locked method)
     predcc ts --submit              trunk + TS module (barriers, kinetics)
+    predcc nmr                      measured log K from NMR spectra
 
 Every chain repeats itself on SLURM until nothing is left. Individual stages
 stay available for debugging and pilots (prepare, conformers, dft-opt,
@@ -26,6 +27,7 @@ import sys
 from pathlib import Path
 
 from predcc_dft import __version__
+from predcc_dft.experiment.equilibrium import TEMPLATE as NMR_TEMPLATE
 from predcc_dft.protocol import methods
 from predcc_dft.protocol.config import DATA_DIR, Config, load_config
 from predcc_dft.protocol.io import write_text
@@ -34,7 +36,7 @@ STARTER_SETTINGS = """\
 # Project settings: merged over the packaged defaults
 # ({defaults}).
 # Any key from that file can be overridden here; only list what you change.
-
+{project}
 [inputs]
 # One SMILES per line; an optional name may follow after a space.
 aldehydes = "inputs/aldehydes.txt"
@@ -64,6 +66,8 @@ EXPERIMENTAL_EXAMPLE = """\
 # One file per measured equilibrium, named <reaction key>.toml (SOP 2.5).
 # Reaction keys are in reactions.toml and the branch's reaction_energies.csv.
 # Rename to CND-<16 hex>.toml and fill in; files starting with '_' are ignored.
+# Raw data (spectra, integrals) can sit beside these files in sub-folders:
+# only the *.toml files directly in this folder are read.
 schema_version = 1
 reaction = "CND-0000000000000000"
 log_k = 0.0
@@ -97,8 +101,38 @@ def _print(summary: dict, indent: str = "  ") -> None:
             print(f"{indent}{key}: {val}")
 
 
-def cmd_init(root: Path, example: bool) -> int:
-    """Create a study: config/, inputs/, benchmark/, production/, ts/."""
+def _layout(data_dir: str | None, experimental_dir: str | None) -> str:
+    """[project] block of a new settings.toml (empty: default layout)."""
+    lines = []
+    if data_dir:
+        base = Path(data_dir).as_posix().strip("/")
+        for branch in ("benchmark", "production", "ts"):
+            lines.append(f"{branch}_dir = {json.dumps(f'{base}/{branch}')}")
+    if experimental_dir:
+        lines.append(f"experimental_dir = {json.dumps(experimental_dir)}")
+    if not lines:
+        return ""
+    return (
+        "\n[project]\n"
+        "# Where each branch keeps its data (relative to this study).\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
+def cmd_init(
+    root: Path,
+    example: bool,
+    data_dir: str | None = None,
+    experimental_dir: str | None = None,
+) -> int:
+    """Create a study: config/, inputs/ and the branch folders.
+
+    The branch folders go where the settings put them ([project]
+    benchmark_dir, production_dir, ts_dir, experimental_dir): data_dir and
+    experimental_dir write those keys into a new config/settings.toml; an
+    existing settings.toml is kept and followed.
+    """
     root.mkdir(parents=True, exist_ok=True)
     cdir = root / "config"
     made = []
@@ -110,27 +144,43 @@ def cmd_init(root: Path, example: bool) -> int:
         if os.name == "nt"
         else json.dumps(f"source {Path(sys.prefix).as_posix()}/bin/activate")
     )
+    settings = cdir / "settings.toml"
+    if not settings.exists():
+        write_text(
+            settings,
+            STARTER_SETTINGS.format(
+                defaults=(DATA_DIR / "settings.toml").as_posix(),
+                setup=setup,
+                project=_layout(data_dir, experimental_dir),
+            ),
+        )
+        made.append("config/settings.toml")
+    elif data_dir or experimental_dir:
+        print(
+            f"{settings} exists: its [project] layout is used, "
+            "not --data-dir/--experimental-dir"
+        )
+    cfg = load_config(root=root)
     files = {
-        cdir / "settings.toml": STARTER_SETTINGS.format(
-            defaults=(DATA_DIR / "settings.toml").as_posix(), setup=setup
-        ),
         cdir / "censo2rc": (DATA_DIR / "censo2rc").read_text(encoding="utf-8"),
-        root / "benchmark" / "methods.toml": (
+        cfg.benchmark_dir / "methods.toml": (
             DATA_DIR / "methods.toml"
         ).read_text(encoding="utf-8"),
-        root / "benchmark" / "molecules.txt": SELECTION_TEMPLATE.format(
+        cfg.benchmark_dir / "molecules.txt": SELECTION_TEMPLATE.format(
             branch="Benchmark"
         ),
-        root / "benchmark" / "experimental" / "_example.toml": (
+        cfg.experimental_dir("benchmark") / "_example.toml": (
             EXPERIMENTAL_EXAMPLE
         ),
-        root / "production" / "molecules.txt": SELECTION_TEMPLATE.format(
+        cfg.production_dir / "molecules.txt": SELECTION_TEMPLATE.format(
             branch="Production"
         ),
-        root / "production" / "experimental" / "_example.toml": (
+        cfg.experimental_dir("production") / "_example.toml": (
             EXPERIMENTAL_EXAMPLE
         ),
-        root / "ts" / "molecules.txt": SELECTION_TEMPLATE.format(
+        cfg.experimental_dir("benchmark") / "samples.toml": NMR_TEMPLATE,
+        cfg.experimental_dir("production") / "samples.toml": NMR_TEMPLATE,
+        cfg.ts_dir / "molecules.txt": SELECTION_TEMPLATE.format(
             branch="TS module"
         )
         + "# Every selected imine gets 2 steps x every [ts] shuttle TSs.\n",
@@ -147,7 +197,7 @@ def cmd_init(root: Path, example: bool) -> int:
         if path.exists():
             continue
         write_text(path, text)
-        made.append(str(path.relative_to(root)))
+        made.append(path.relative_to(cfg.root).as_posix())
     print(f"study: {root.resolve()}")
     print(
         "  created: " + (", ".join(made) if made else "nothing (all present)")
@@ -257,6 +307,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="fill inputs/ with example lists",
     )
+    p.add_argument(
+        "--data-dir",
+        help="put benchmark/, production/ and ts/ under this folder of the "
+        "study (e.g. data -> data/benchmark/ ...)",
+    )
+    p.add_argument(
+        "--experimental-dir",
+        help="name of each branch's measured-data folder "
+        "(default: experimental)",
+    )
 
     for name, hlp in (
         ("run", "trunk only: inputs -> best.xyz for every molecule"),
@@ -287,6 +347,21 @@ def build_parser() -> argparse.ArgumentParser:
                 default=[],
                 help="only this functional, all its basis sets (repeatable)",
             )
+
+    p = sub.add_parser(
+        "nmr",
+        help="measured log K from NMR spectra (<branch>/<experimental_dir>/"
+        "samples.toml)",
+        description="Integrates the aldehyde and imine signals of every "
+        "sample in samples.toml (nmrglue), converts conversion to K and "
+        "writes <reaction key>.toml beside it for the branch analysis.",
+    )
+    p.add_argument(
+        "branch",
+        nargs="?",
+        default="all",
+        choices=["all", "benchmark", "production"],
+    )
 
     p = sub.add_parser(
         "promote",
@@ -395,7 +470,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.command == "init":
         return cmd_init(
-            args.directory or args.root or Path.cwd(), args.example
+            args.directory or args.root or Path.cwd(),
+            args.example,
+            args.data_dir,
+            args.experimental_dir,
         )
     cfg = load_config(args.config, args.root)
     from predcc_dft.protocol import lock, project
@@ -455,6 +533,25 @@ def _dispatch(cfg: Config, args: argparse.Namespace) -> int:  # noqa: C901, PLR0
             f"in {cfg.root}"
         )
         _print(report)
+        return 0
+    if cmd == "nmr":
+        from predcc_dft.experiment import equilibrium
+
+        branches = (
+            ["benchmark", "production"]
+            if args.branch == "all"
+            else [args.branch]
+        )
+        try:
+            for branch in branches:
+                print(f"{branch}: {equilibrium.samples_path(cfg, branch)}")
+                _print(equilibrium.run(cfg, branch), "    ")
+        except equilibrium.SampleError as err:
+            print(err)
+            return 1
+        from predcc_dft.workflow import index
+
+        print(f"index/<molecule>.toml files: {index.run(cfg)}")
         return 0
     if cmd == "cancel":
         ids = pipeline.cancel(cfg)

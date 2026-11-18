@@ -67,7 +67,7 @@ def run(cfg: Config) -> dict:
     reactions = read_toml(cfg.reactions_file)
     species = species_energies(cfg)
     rxn_rows = assembly.reaction_energies(cfg, species, reactions)
-    exp = errors.experimental(cfg.benchmark_dir / "experimental", reactions)
+    exp = errors.experimental(cfg.experimental_dir(BRANCH), reactions)
     ref_label = cfg["analysis"].get("reference", constants.REFERENCE_LABEL)
     err_rows = errors.errors(cfg, rxn_rows, exp, ref_label)
     rank = ranking.ranking(cfg, err_rows)
