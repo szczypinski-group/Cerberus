@@ -26,16 +26,27 @@ Safety: nothing is written while a stage this chain depends on is still in the
 queue (partial outputs would look like failures); a task folder is submitted
 at most ``[pipeline] max_submissions`` times; a chain stops after
 ``max_rounds``.
+
+``predcc trunk --submit`` is the single-job alternative for the trunk: one
+SLURM job (``[slurm.stage.trunk]``) runs the same rounds itself, executing
+each round's task folders one after another inside its own allocation
+instead of submitting arrays (``run_trunk_here``). Other chains wait for it
+like for any trunk stage.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import queue
+import re
 import shlex
+import shutil
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import ModuleType
 from typing import IO
@@ -62,6 +73,7 @@ log = logging.getLogger(__name__)
 
 CHAINS = ("trunk", "benchmark", "production", "ts")
 TRUNK_STAGES = ("conformers", "dft_opt", "frequencies")
+TRUNK_JOB = "trunk"  # `predcc trunk`: the whole trunk in one SLURM job
 BRANCH_STAGES = {
     "benchmark": ("reference", "benchmark"),
     "production": ("production",),
@@ -122,16 +134,25 @@ def local_steps(cfg: Config, chain: str = "trunk") -> dict:
     return out
 
 
+def _predcc_command(
+    cfg: Config, config: Path | None, args: list[str]
+) -> list[str]:
+    """`python -m predcc_dft --root <study> [--config ...] <args>`."""
+    cmd = [sys.executable, "-m", "predcc_dft", "--root", str(cfg.root)]
+    if config is not None:
+        cmd += ["--config", str(config.resolve())]
+    return cmd + args
+
+
 def _driver_script(
     cfg: Config, chain: str, next_round: int, config: Path | None
 ) -> Path:
     """Write jobs/driver/<chain>.slurm, which runs the chain's next round."""
     drv_dir = cfg.jobs_dir / "driver"
     (drv_dir / "logs").mkdir(parents=True, exist_ok=True)
-    cmd = [sys.executable, "-m", "predcc_dft", "--root", str(cfg.root)]
-    if config is not None:
-        cmd += ["--config", str(config.resolve())]
-    cmd += [COMMAND[chain], "--submit", "--round", str(next_round)]
+    cmd = _predcc_command(
+        cfg, config, [COMMAND[chain], "--submit", "--round", str(next_round)]
+    )
     if chain == "benchmark":
         for level in cfg["benchmark"].get("levels") or []:
             cmd += ["--level", level]
@@ -270,9 +291,12 @@ def _advance(
 ) -> dict:
     """Body of advance(), run under the project lock."""
     report: dict = {"round": round_no, "chain": chain}
-    relevant = set(TRUNK_STAGES) | set(BRANCH_STAGES.get(chain, ()))
+    relevant = {TRUNK_JOB, *TRUNK_STAGES, *BRANCH_STAGES.get(chain, ())}
+    me = os.environ.get("SLURM_JOB_ID", "")  # the trunk job checks itself
     running = {
-        s: j for s, j in slurm.running_stages(cfg).items() if s in relevant
+        s: j
+        for s, j in slurm.running_stages(cfg).items()
+        if s in relevant and j != me
     }
     if running:
         report["busy"] = (
@@ -326,6 +350,234 @@ def _advance(
         )
     report["status"] = status.summary(cfg)
     return report
+
+
+# ------------------------------------------------------ the trunk in one job
+
+
+def trunk_script(
+    cfg: Config, config: Path | None = None, force_prepare: bool = False
+) -> Path:
+    """Write jobs/trunk/trunk.slurm: one job that runs the whole trunk."""
+    job_dir = cfg.jobs_dir / TRUNK_JOB
+    (job_dir / "logs").mkdir(parents=True, exist_ok=True)
+    args = ["trunk", "--here"] + (["--force-prepare"] if force_prepare else [])
+    lines = slurm.header(
+        cfg, TRUNK_JOB, "predcc_trunk", f"{job_dir}/logs/trunk_%j.out"
+    )
+    lines += [
+        "",
+        f'cd "{cfg.root}"',
+        shlex.join(_predcc_command(cfg, config, args)),
+        "",
+    ]
+    script = job_dir / "trunk.slurm"
+    write_text(script, "\n".join(lines))
+    return script
+
+
+def trunk_job(
+    cfg: Config,
+    submit: bool = False,
+    config: Path | None = None,
+    force_prepare: bool = False,
+) -> dict:
+    """`predcc trunk [--submit]`: write (and submit) the single trunk job."""
+    report: dict = {}
+    running = {
+        s: j
+        for s, j in slurm.running_stages(cfg).items()
+        if s in (TRUNK_JOB, *TRUNK_STAGES)
+    }
+    if running:
+        report["busy"] = (
+            "already in the queue: "
+            + ", ".join(f"{s} (job {j})" for s, j in running.items())
+            + "; nothing submitted."
+        )
+        return report
+    st = cfg["slurm"]["stage"][TRUNK_JOB]
+    cpus, per = int(st["cpus"]), int(st.get("cores_per_task", st["cpus"]))
+    report["layout"] = (
+        f"{cpus} cores, {max(1, cpus // per)} calculations at once, "
+        f"{min(per, cpus)} cores each"
+    )
+    if cpus % per:
+        report["warning"] = (
+            f"[slurm.stage.trunk] cpus = {cpus} is not a multiple of "
+            f"cores_per_task = {per}: {cpus % per} cores stay idle"
+        )
+    script = trunk_script(cfg, config, force_prepare)
+    report["script"] = str(script)
+    if not submit:
+        report["next"] = f"sbatch {script}   (or use --submit)"
+    elif not slurm.available():
+        report["submit"] = "sbatch/squeue not found: submit by hand"
+    else:
+        job_id = slurm.sbatch(script)
+        slurm.record_submission(cfg, TRUNK_JOB, job_id, [])
+        report["submitted"] = (
+            f"job {job_id}: steps 1-7 for every molecule, task after task"
+        )
+    return report
+
+
+def core_slots(cfg: Config) -> list[list[int]]:
+    """Split this job's cores into one group per simultaneous calculation.
+
+    ``[slurm.stage.trunk] cpus`` cores (at most those this process may use)
+    in groups of ``cores_per_task``: 16 cores, 4 per task -> 4 at once.
+    """
+    st = cfg["slurm"]["stage"][TRUNK_JOB]
+    per = max(1, int(st.get("cores_per_task", st["cpus"])))
+    try:
+        mine = sorted(os.sched_getaffinity(0))
+    except AttributeError:  # not Linux
+        mine = list(range(os.cpu_count() or 1))
+    usable = mine[: max(1, int(st["cpus"]))]
+    if len(usable) < per:
+        return [usable]
+    return [
+        usable[i : i + per] for i in range(0, len(usable) // per * per, per)
+    ]
+
+
+@contextlib.contextmanager
+def _stage_cores(cfg: Config, n: int) -> Iterator[None]:
+    """Write every trunk task for n cores (ORCA %pal, CREST -T) meanwhile."""
+    stages = cfg["slurm"]["stage"]
+    saved = {s: stages[s]["cpus"] for s in TRUNK_STAGES if s in stages}
+    try:
+        for s in saved:
+            stages[s]["cpus"] = n
+        yield
+    finally:
+        for s, v in saved.items():
+            stages[s]["cpus"] = v
+
+
+_PAL = re.compile(r"%pal nprocs \d+ end")
+
+
+def _run_task(cfg: Config, stage: str, task: Path, cores: list[int]) -> int:
+    """Run one task folder's run.sh on these cores; return its exit code."""
+    n = len(cores)
+    inp = task / "input.inp"
+    if inp.exists():  # written earlier for another core count
+        text = inp.read_text(encoding="utf-8")
+        fixed = _PAL.sub(f"%pal nprocs {n} end", text)
+        if fixed != text:
+            write_text(inp, fixed)
+    env = dict(os.environ)
+    env["PREDCC_CORES"] = str(n)  # what job_info.toml / record.toml report
+    env["OMP_NUM_THREADS"] = "1" if stage in slurm.MPI_STAGES else str(n)
+    if stage not in slurm.MPI_STAGES:  # CREST/CENSO read their threads here
+        env["SLURM_CPUS_PER_TASK"] = str(n)
+    # Several mpiruns share the allocation: let the ranks inherit the
+    # taskset mask instead of all binding to the first cores.
+    env["OMPI_MCA_hwloc_base_binding_policy"] = "none"
+    env["PRTE_MCA_hwloc_default_binding_policy"] = "none"  # Open MPI 5
+    cmd = ["bash", str(task / "run.sh")]
+    if shutil.which("taskset"):
+        cmd = ["taskset", "-c", ",".join(map(str, cores)), *cmd]
+    with (task / "trunk_job.out").open("w", encoding="utf-8") as fh:
+        done = subprocess.run(
+            cmd,
+            cwd=task,
+            env=env,
+            stdout=fh,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    return done.returncode
+
+
+def _run_parallel(
+    cfg: Config, round_no: int, tasks: dict[str, list[Path]]
+) -> dict:
+    """Run every task of a round, one per free core group at a time."""
+    slots = core_slots(cfg)
+    free: queue.Queue[list[int]] = queue.Queue()
+    for group in slots:
+        free.put(group)
+    jobs = [(s, d) for s, dirs in tasks.items() for d in dirs]
+    log.info(
+        "round %d: %d tasks, %d at a time, %d cores each",
+        round_no,
+        len(jobs),
+        len(slots),
+        len(slots[0]),
+    )
+
+    def one(stage: str, task: Path) -> int:
+        cores = free.get()
+        try:
+            log.info(
+                "start %s on cores %s: %s",
+                stage,
+                ",".join(map(str, cores)),
+                task.relative_to(cfg.root).as_posix(),
+            )
+            return _run_task(cfg, stage, task, cores)
+        finally:
+            free.put(cores)
+
+    with ThreadPoolExecutor(max_workers=len(slots)) as pool:
+        codes = list(pool.map(lambda j: one(*j), jobs))
+    failed: dict[str, int] = dict.fromkeys(tasks, 0)
+    for (stage, _), code in zip(jobs, codes, strict=True):
+        failed[stage] += code != 0
+    return {
+        s: f"{len(dirs)} tasks, {failed[s]} failed"
+        for s, dirs in tasks.items()
+    }
+
+
+def run_trunk_here(cfg: Config, force_prepare: bool = False) -> dict:
+    """Run trunk rounds until nothing is left, executing tasks in-process.
+
+    Each round is ``advance(chain="trunk")`` without submission, with every
+    task written for ``[slurm.stage.trunk] cores_per_task`` cores. The task
+    folders are then run here (inside the trunk job's allocation), as many
+    at once as there are core groups (``core_slots``). Submission counts and
+    ``max_rounds`` apply exactly as for the array route.
+    """
+    max_rounds = int(cfg["pipeline"]["max_rounds"])
+    per_task = len(core_slots(cfg)[0])
+    rounds: dict[str, dict] = {}
+    rep: dict = {}
+    with _stage_cores(cfg, per_task):
+        for round_no in range(1, max_rounds + 1):
+            rep = advance(
+                cfg,
+                round_no=round_no,
+                force_prepare=force_prepare and round_no == 1,
+                chain="trunk",
+            )
+            if "busy" in rep:
+                return {"stopped": rep["busy"], "rounds": rounds or "none"}
+            tasks = {
+                s: slurm.manifest_tasks(cfg, stage_dir(cfg, s))
+                for s in _trunk_writers(cfg)
+            }
+            tasks = {s: t for s, t in tasks.items() if t}
+            if not tasks:
+                break
+            for dirs in tasks.values():
+                slurm.count_submissions(dirs)
+            rounds[f"round {round_no}"] = _run_parallel(cfg, round_no, tasks)
+        else:
+            return {
+                "stopped": f"max_rounds = {max_rounds} reached",
+                "rounds": rounds,
+                "status": status.summary(cfg),
+            }
+    out: dict = {"finished": "nothing left to run", "rounds": rounds or "none"}
+    key = "given up (see <stage>/given_up.txt)"
+    if key in rep:
+        out[key] = rep[key]
+    out["status"] = rep["status"]
+    return out
 
 
 def cancel(cfg: Config) -> list[str]:

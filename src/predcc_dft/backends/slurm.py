@@ -46,7 +46,7 @@ rm -f "$WORK"/*.tmp "$WORK"/*.tmp.* 2>/dev/null
 cat > "$HERE/job_info.toml" <<EOF
 slurm_job_id = "${{SLURM_ARRAY_JOB_ID:-${{SLURM_JOB_ID:-}}}}\
 ${{SLURM_ARRAY_TASK_ID:+_$SLURM_ARRAY_TASK_ID}}"
-cores = ${{SLURM_NTASKS:-1}}
+cores = ${{PREDCC_CORES:-${{SLURM_NTASKS:-1}}}}
 wall_time_s = $(( $(date +%s) - START ))
 exit_code = $STATUS
 host = "$(hostname)"
@@ -69,6 +69,7 @@ def orca_run_script(directory: Path, label: str, cfg: Config) -> None:
 
 # Stages whose programs run as MPI ranks (ORCA) rather than threads.
 MPI_STAGES = {
+    "trunk",  # `predcc trunk`: one job that runs every trunk task in turn
     "dft_opt",
     "frequencies",
     "reference",
@@ -253,6 +254,11 @@ def record_submission(
         "submitted": now(),
     }
     write_toml(path, data)
+    count_submissions(task_dirs)
+
+
+def count_submissions(task_dirs: list[Path]) -> None:
+    """Add one to each task folder's .submissions counter."""
     for d in task_dirs:
         (d / ".submissions").write_text(
             f"{records.submissions(d) + 1}\n", encoding="utf-8"

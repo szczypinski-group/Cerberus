@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from predcc_dft.backends import slurm
 from predcc_dft.benchmark import report as benchmark_report
 from predcc_dft.energies import reference, thermo
 from predcc_dft.protocol import methods, project
@@ -951,3 +952,97 @@ def test_init_settings_parse(
     else:
         prefix = Path("C:\\Users\\me\\.venv").as_posix()
         assert lines == [f"source {prefix}/bin/activate"]
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="fake sbatch/squeue are bash scripts"
+)
+def test_trunk_single_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`predcc trunk`: one job runs every trunk round, task after task."""
+    root = make_project(
+        tmp_path,
+        "name,smiles\nbenzaldehyde,O=Cc1ccccc1\n",
+        "name,smiles\naniline,Nc1ccccc1\n",
+    )
+    cfg = load_config(root=root)
+
+    # The job script: one MPI-style allocation, runs `predcc trunk --here`
+    rep = pipeline.trunk_job(cfg)
+    script = Path(rep["script"])
+    text = script.read_text(encoding="utf-8")
+    assert script == root / "jobs" / "trunk" / "trunk.slurm"
+    assert "#SBATCH --ntasks=16" in text and "--array" not in text
+    assert "-m predcc_dft --root" in text and "trunk --here" in text
+    assert rep["next"].startswith("sbatch ")
+
+    assert rep["layout"] == "16 cores, 4 calculations at once, 4 cores each"
+
+    # 16 cores in groups of 4 (fewer if this machine has fewer)
+    monkeypatch.setattr(pipeline.os, "sched_getaffinity", lambda _: range(32))
+    slots = pipeline.core_slots(cfg)
+    assert slots == [
+        [0, 1, 2, 3],
+        [4, 5, 6, 7],
+        [8, 9, 10, 11],
+        [12, 13, 14, 15],
+    ]
+
+    # Inside the job: fake CREST/CENSO and Opt+Freq instead of run.sh
+    import threading
+    import time
+
+    ran: list[tuple[str, Path, list[int]]] = []
+    busy, peak, lock = [0], [0], threading.Lock()
+
+    def fake_task(cfg: object, stage: str, task: Path, cores: list) -> int:
+        with lock:
+            ran.append((stage, task, cores))
+            busy[0] += 1
+            peak[0] = max(peak[0], busy[0])
+        time.sleep(0.05)
+        with lock:
+            if stage == "conformers":
+                if not (task / "DONE").exists():
+                    mock_crest_censo(root, cfg)
+            else:
+                inp = (task / "input.inp").read_text(encoding="utf-8")
+                assert "%pal nprocs 4 end" in inp
+                finish_freq(task, [25.0, 50.0])
+            busy[0] -= 1
+        return 0
+
+    monkeypatch.setattr(pipeline, "_run_task", fake_task)
+    out = pipeline.run_trunk_here(cfg)
+    assert peak[0] > 1  # calculations really overlap
+    assert all(len(c) == 4 for _, _, c in ran)
+    assert cfg["slurm"]["stage"]["frequencies"]["cpus"] == 8  # restored
+    assert out["finished"] == "nothing left to run"
+    assert set(out["rounds"]) == {"round 1", "round 2"}
+    n_mol = len(project.molecules(cfg))
+    assert sum(s == "conformers" for s, _, _ in ran) == n_mol
+    assert all(
+        (root / r["directory"] / "best.xyz").exists()
+        for r in project.molecules(cfg)
+    )
+    assert out["status"]["best geometry (6-7)"] == n_mol
+    task = next(root.glob("molecules/*/conformers"))
+    assert (task / ".submissions").read_text(encoding="utf-8").strip() == "1"
+
+    # Submitted: recorded, and the benchmark chain waits for it
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "sbatch").write_text("#!/bin/bash\necho 777\n")
+    (bin_dir / "squeue").write_text("#!/bin/bash\necho '777 777'\n")
+    for f in bin_dir.iterdir():
+        f.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    assert main(["--root", str(root), "trunk", "--submit"]) == 0
+    assert slurm.running_stages(cfg) == {"trunk": "777"}
+    assert "busy" in pipeline.trunk_job(cfg, submit=True)
+    rep = pipeline.advance(cfg, chain="benchmark")
+    assert "trunk (job 777)" in rep["busy"]
+    # ...but the job itself is not blocked by its own entry
+    monkeypatch.setenv("SLURM_JOB_ID", "777")
+    assert "busy" not in pipeline.advance(cfg)

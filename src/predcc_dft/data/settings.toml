@@ -230,6 +230,13 @@ modules = []                    # e.g. ["orca/6.0.1", "openmpi/4.1.6", "crest/3.
 setup_lines = []                # e.g. ["source ~/venvs/predcc/bin/activate"]
 scratch_root = ""               # e.g. "$TMPDIR"; empty = run ORCA in place
 
+[slurm.stage.trunk]             # `predcc trunk`: the whole trunk in one job
+cpus = 16                       # cores of the whole job
+cores_per_task = 4              # cores of each calculation (ORCA %pal, CREST -T);
+                                # cpus / cores_per_task run at the same time
+mem_per_cpu_mb = 3000
+time = "72:00:00"               # rerun `predcc trunk --submit` if it runs out
+
 [slurm.stage.conformers]
 cpus = 16
 mem_per_cpu_mb = 2000

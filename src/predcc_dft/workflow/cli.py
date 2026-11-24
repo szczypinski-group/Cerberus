@@ -349,6 +349,25 @@ def build_parser() -> argparse.ArgumentParser:
             )
 
     p = sub.add_parser(
+        "trunk",
+        help="the whole trunk (steps 1-7) as one SLURM job",
+        description="Writes jobs/trunk/trunk.slurm, one job that runs every "
+        "trunk round itself: CREST/CENSO, Opt+Freq (and retries) and the "
+        "structure check, task after task inside its own allocation "
+        "([slurm.stage.trunk]), until best.xyz exists for every molecule.",
+    )
+    p.add_argument("--submit", action="store_true", help="sbatch the job")
+    p.add_argument(
+        "--here",
+        action="store_true",
+        help="run every trunk task on this machine now, one after another "
+        "(what the job itself does)",
+    )
+    p.add_argument(
+        "--force-prepare", action="store_true", help="rerun steps 1-3"
+    )
+
+    p = sub.add_parser(
         "nmr",
         help="measured log K from NMR spectra (<branch>/<experimental_dir>/"
         "samples.toml)",
@@ -533,6 +552,17 @@ def _dispatch(cfg: Config, args: argparse.Namespace) -> int:  # noqa: C901, PLR0
             f"in {cfg.root}"
         )
         _print(report)
+        return 0
+    if cmd == "trunk":
+        if args.here:
+            print(f"PreDCC trunk, in this job, in {cfg.root}")
+            _print(pipeline.run_trunk_here(cfg, args.force_prepare))
+        else:
+            _print(
+                pipeline.trunk_job(
+                    cfg, args.submit, args.config, args.force_prepare
+                )
+            )
         return 0
     if cmd == "nmr":
         from predcc_dft.experiment import equilibrium
